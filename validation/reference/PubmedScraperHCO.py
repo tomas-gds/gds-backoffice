@@ -1,0 +1,109 @@
+import pandas as pd
+
+from PubmedScraper import PubmedScraper
+from LocaleNormaliser import LocaleNormaliser
+from HCONormaliser import HCONormaliser
+
+
+class PubmedScraperHCO:
+    def __init__(self, search, country, numyears=5, email=None, api_key=None):
+        self.search = search
+        self.country = country.lower().title()
+        self.numyears = numyears
+
+        self.rows = [] #[ {"Author":, "AuthorKey":, "Title":, "Country":, "Affiliations":, "Other affiliations":,"PMID":,"URL":,"Source":}, ...]
+        self.first_cols = ["HCO", "Department", "Title", "Publication Type", "City", "Country"]
+
+        self.df = pd.DataFrame()
+
+        self.pubmed_scraper = PubmedScraper(self.search ,self.country,self.numyears)
+        self.locale_normaliser = LocaleNormaliser(self.country)
+        self.hco_normaliser = HCONormaliser(self.df, self.country)
+
+    def get_pubmedsHCO(self, query):
+        if self.country.lower() in ["usa","uk","uae"]:
+            self.country = self.country.upper()
+
+        country_aliases = {self.country.lower()}
+        translated_country_name = self.locale_normaliser.translated_country_name
+
+        if translated_country_name:
+            country_aliases.add(translated_country_name.lower())
+        if self.country.lower() in ["uk", "united kingdom"]:
+            country_aliases.add("united kingdom")
+            country_aliases.add("uk")
+            # country_aliases.add("england")
+            country_aliases.add("scotland")
+            # country_aliases.add("wales")
+            country_aliases.add("nothern ireland")
+
+        pubmeds = self.pubmed_scraper.get_pubmeds(query)
+
+        for pubmed in pubmeds:
+
+            publication_in_country_affs = set()
+            for author in pubmed["author_list"]:
+                if not author:
+                    continue
+
+                author_affs = author.get("AffiliationInfo", [])
+
+                if (len(author_affs) == 1) and ";" in author_affs[0].get("Affiliation", ""):
+                    author_affs_list = (author_affs[0].get("Affiliation", "") or "").split("; ")
+                else:
+                    author_affs_list = [aff.get("Affiliation", "") for aff in author_affs]
+
+
+                for aff in author_affs_list:
+                    if aff and any(alias in aff.lower() for alias in country_aliases):
+                        publication_in_country_affs.add(aff.strip())
+
+            # one row per publication + in-country affiliation
+            for in_country_aff in publication_in_country_affs:
+                country, cities = self.locale_normaliser.extract_countries_cities(in_country_aff)
+
+                self.rows.append({
+                    "Title": pubmed["title"],
+                    "Publication Type": pubmed["publication_types"],
+                    "NCT Code": pubmed["nct_codes"],
+                    "Collaborators": pubmed["collaborators"],
+                    "Study Groups": pubmed["study_group_names"],
+                    "City": cities,
+                    "Country": country if country else self.country,
+                    "Affiliations": in_country_aff,
+                    "COI Statements All": pubmed["coi_statements_all"],
+                    "Year": pubmed["year"] if pubmed["year"] is not None else "",
+                    "doi": f"https://doi.org/{pubmed["doi"]}" if pubmed["doi"] else "",
+                    "URL": pubmed["url"],
+                    # "pubmed": pubmed
+                })
+
+
+    def extract(self):
+        query = f"({self.search}) AND ({self.country}[Affiliation])"
+
+        self.get_pubmedsHCO(query)
+
+        self.df = pd.DataFrame(self.rows)
+
+
+    def main(self):
+        print("\n🔍 Starting Pubmed extraction...")
+        self.extract()
+
+        if self.df.empty:
+            print("❗ NO PUBMEDS WERE FOUND ❗")
+            return
+
+        print("🏥 Normalizing HCO and departments...")
+        self.df = self.hco_normaliser.get_HCO_and_dept(self.df,self.first_cols)
+
+        if not self.df.empty:
+            self.df = self.df.drop_duplicates(subset=["HCO", "URL"]).reset_index(drop=True)
+
+        print("💾 Writing Excel output...")
+        self.pubmed_scraper.write_excel(self.df,scraper="hco")
+
+
+
+

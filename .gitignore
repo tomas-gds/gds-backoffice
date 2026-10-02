@@ -1,0 +1,10 @@
+node_modules/
+.next/
+.sites-runtime/
+dist/
+dist-desktop/
+src-tauri/target/
+backend/.venv/
+**/__pycache__/
+.pytest_cache/
+.env

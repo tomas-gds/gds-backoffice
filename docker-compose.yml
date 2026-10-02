@@ -1,0 +1,16 @@
+services:
+  matching-api:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  interface:
+    build: .
+    environment:
+      VITE_MATCHING_API_URL: http://127.0.0.1:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - matching-api
+    restart: unless-stopped
