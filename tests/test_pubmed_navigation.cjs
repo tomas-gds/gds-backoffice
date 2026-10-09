@@ -1,0 +1,43 @@
+const fs = require('fs');
+const path = require('path');
+const assert = require('assert/strict');
+const source = fs.readFileSync(path.join(__dirname, '../features/pubmed-scraper/PubmedScraper.jsx'), 'utf8');
+const back = source.slice(source.indexOf('  function handleBack()'), source.indexOf('  async function stopAndLeave()'));
+const stop = source.slice(source.indexOf('  async function stopAndLeave()'), source.indexOf('  const [pendingBytes'));
+const run = source.slice(source.indexOf('  async function run(event)'), source.indexOf('  async function applyNameReview()'));
+const API = 'http://localhost';
+const activeRun = { current: null };
+let left = 0, leaveOpen = false, stopping = false, error = '', pending = false;
+const onBack = () => left++;
+const setLeaveOpen = value => leaveOpen = value;
+const setStopping = value => stopping = value;
+const setError = value => error = value;
+let fetch;
+eval(back + stop);
+(async () => {
+  handleBack(); assert.equal(left, 1);
+  const active = { id: 'fixture', controller: new AbortController() };
+  activeRun.current = active;
+  handleBack(); assert.equal(leaveOpen, true); assert.equal(left, 1); assert.equal(active.controller.signal.aborted, false);
+  fetch = async () => ({ ok: false });
+  await stopAndLeave(); assert.equal(left, 1); assert.equal(activeRun.current, active); assert.equal(active.controller.signal.aborted, false); assert.ok(error); assert.equal(stopping, false);
+  fetch = async url => { assert.equal(url, `${API}/pubmed/cancel/fixture`); return { ok: true }; };
+  await stopAndLeave(); assert.equal(left, 2); assert.equal(active.controller.signal.aborted, true); assert.equal(activeRun.current, null);
+  // Exercise the actual run() body with a blocked export and cancellation.
+  const mode = 'author', search = 'pancreatic cancer', country = 'UK', account = { email: 'test@example.com', pubmedApiKey: '' }, companyTarget = 'author', years = 5, sheet = '', nameColumn = '', fullNetwork = false, rareDisease = true, file = null;
+  const setMessage = () => {}, setRunning = () => {}, setPendingBytes = () => pending = true, setSaveFileName = () => {}, setChooseLocation = () => {}, setReviewPairs = () => {}, setReviewIndex = () => {}, setReviewDecisions = () => {}, setReviewOpen = () => {}, setSaveDialogOpen = () => {};
+  const safeFilename = value => value;
+  fetch = (url, options) => {
+    if (url.includes('/cancel/')) return Promise.resolve({ ok: true });
+    assert.equal(url, `${API}/pubmed/export`);
+    assert.equal(options.body.get('job_id'), activeRun.current.id);
+    assert.equal(options.signal, activeRun.current.controller.signal);
+    return new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(new DOMException('Stopped', 'AbortError'))));
+  };
+  eval(run);
+  const task = run({ preventDefault() {} });
+  assert.ok(activeRun.current);
+  await stopAndLeave(); await task;
+  assert.equal(pending, false); assert.equal(error, '');
+  console.log('PASS: idle Back, running confirmation, failed stop stays, confirmed stop aborts, and cancelled run has no late download or error.');
+})().catch(error => { console.error(error); process.exit(1); });

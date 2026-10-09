@@ -13,13 +13,13 @@ from .LocaleNormaliser import LocaleNormaliser
 
 
 class PubmedScraper:
-    def __init__(self, search, country, numyears=5, email=None, api_key=None):
+    def __init__(self, search, country, numyears=5, email="tomas.carrilho@globaldatasupport.com", api_key="8cf31a2cae5d1458307c0ab69097763cc608"):
         self.search = search
         self.country = country.lower().title()
         self.numyears = numyears
 
-        Entrez.email = email or ""
-        Entrez.api_key = api_key or None
+        Entrez.email = email
+        Entrez.api_key = api_key
 
         self.locale_normaliser = LocaleNormaliser(self.country)
 
@@ -360,13 +360,16 @@ class PubmedScraper:
             "study": "Study",
         }
 
-        publication_types = []
+        if "case report" in title_lower or "case report" in pub_type_lower:
+            publication_types = ["Case Report"]
+        else:
+            publication_types = []
 
-        for keyword, label in mapping.items():
-            if keyword in pub_type_lower:
-                publication_types.append(label)
-            elif keyword in title_lower:
-                publication_types.append(f"Potential {label}")
+            for keyword, label in mapping.items():
+                if keyword in pub_type_lower:
+                    publication_types.append(label)
+                elif keyword in title_lower:
+                    publication_types.append(f"Potential {label}")
 
         if not publication_types:
             publication_types.append("Publication")
@@ -501,44 +504,121 @@ class PubmedScraper:
             # "pubmed": pubmed,
         }
 
+    def _normalize_relevance_text(self, value):
+        text = unicodedata.normalize("NFKD", str(value))
+        text = "".join(
+            char for char in text
+            if not unicodedata.combining(char)
+        )
+        # Treat hyphens and other punctuation as spaces.
+        text = re.sub(r"[^\w\s]", " ", text.casefold())
+        return re.sub(r"\s+", " ", text).strip()
 
+    def _flatten_pubmed_text(self, value):
+        """Collect text from all retrieved fields, including the article."""
+        if value is None:
+            return ""
 
-    def write_excel(self,df,author_names_mapping_df=None,potential_names_mapping_df=None,collaborators_df=None,scraper=None,output=None):
+        if isinstance(value, dict):
+            return " ".join(
+                self._flatten_pubmed_text(item)
+                for item in value.values()
+            )
+
+        if isinstance(value, (list, tuple, set)):
+            return " ".join(
+                self._flatten_pubmed_text(item)
+                for item in value
+            )
+
+        return str(value)
+
+    def add_relevance_comment(self, pubmed, search_terms=None):
+        """
+        Flag a publication when any supplied search phrase occurs
+        in its retrieved information, including its abstract.
+        """
+        if search_terms is None:
+            # Supports a plain phrase, OR alternatives, or your + separator.
+            search_terms = re.split(
+                r"\bOR\b|\+",
+                self.search,
+                flags=re.IGNORECASE,
+            )
+        elif isinstance(search_terms, str):
+            search_terms = [search_terms]
+
+        terms = {
+            self._normalize_relevance_text(
+                re.sub(r"\[[^\]]*\]", "", term)
+            )
+            for term in search_terms
+        }
+        terms.discard("")
+
+        combined_text = self._normalize_relevance_text(
+            self._flatten_pubmed_text(pubmed)
+        )
+
+        is_relevant = any(
+            re.search(
+                r"\b" + re.escape(term) + r"s?\b",
+                combined_text,
+            )
+            is not None
+            for term in terms
+        )
+
+        return (
+            "Relevant"
+            if is_relevant
+            else "Check, might not be relevant"
+        )
+
+    def write_excel(self, df, author_names_mapping_df=None, potential_names_mapping_df=None, collaborators_df=None,
+                    pubmeds_to_check=None, scraper=None, output=None):
         if df is None or df.empty:
             print("❌ Error: No data to write. The DataFrame is empty.")
             return
 
-        if scraper in ["author","hcp","company"]:
+        if scraper in ["author", "hcp", "company"]:
             df["No. Publications"] = df.groupby("Author")["URL"].transform("nunique")
         else:
             df["No. Publications"] = df.groupby(["HCO", "City"])["URL"].transform("nunique")
 
         df = df.sort_values(by="No. Publications", ascending=False)
 
-        # App downloads use the same export rules as CMD, with a BytesIO
-        # destination instead of the script's fixed output directory.
-        if scraper == "author":
-            df = df.drop(columns=["Author key"], errors="ignore")
-        if output is None:
-            safe_search = self._sanitize_input_string(self.search, max_length=50)
-            safe_country = self._sanitize_input_string(self.country, max_length=40)
-            output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "0. Output")
-            os.makedirs(output_dir, exist_ok=True)
-            timestamp = datetime.datetime.now().strftime("%d-%m-%Y_%H-%M")
-            label = {"author": "Authors", "hcp": "HCP"}.get(scraper, "HCO")
-            out_path = os.path.join(output_dir, f"pubmed_{label}_{safe_search}_{safe_country}_{timestamp}.xlsx")
-        else:
-            out_path = output
+        safe_search = self._sanitize_input_string(self.search, max_length=50)
+        safe_country = self._sanitize_input_string(self.country, max_length=40)
 
-        with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        parent_dir = os.path.dirname(script_dir)
+
+        output_dir = os.path.join(parent_dir, "0. Output")
+        os.makedirs(output_dir, exist_ok=True)
+
+        timestamp = datetime.datetime.now().strftime("%d-%m-%Y_%H-%M")
+        if scraper == "author":
+            out_path = os.path.join(output_dir, f"pubmed_Authors_{safe_search}_{safe_country}_{timestamp}.xlsx")
+            df = df.drop(columns=["Author key"], errors="ignore")
+        elif scraper == "hcp":
+            out_path = os.path.join(output_dir, f"pubmed_HCP_{safe_search}_{safe_country}_{timestamp}.xlsx")
+        else:
+            out_path = os.path.join(output_dir, f"pubmed_HCO_{safe_search}_{safe_country}_{timestamp}.xlsx")
+
+        destination = output if output is not None else out_path
+
+        with pd.ExcelWriter(destination, engine="openpyxl") as writer:
             df.to_excel(writer, sheet_name="PubMed Data", index=False)
-            if scraper in ["author","hcp"]:
+            if scraper in ["author", "hcp"]:
                 collaborators_df.to_excel(writer, sheet_name="Collaborators", index=False)
+                # pubmeds_to_check.to_excel(writer, sheet_name="Pubmed To Check", index=False)
                 author_names_mapping_df.to_excel(writer, sheet_name="Names Mapping", index=False)
                 potential_names_mapping_df.to_excel(writer, sheet_name="Potential Mappings", index=False)
 
-
         print("\n✅ Your file is now available.")
+
+
 
 
 

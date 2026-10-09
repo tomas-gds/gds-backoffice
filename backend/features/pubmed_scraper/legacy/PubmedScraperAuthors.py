@@ -6,6 +6,7 @@ from .PubmedScraper import PubmedScraper
 from .LocaleNormaliser import LocaleNormaliser
 from .NameNormaliser import NameNormaliser
 from .HCONormaliser import HCONormaliser
+from .utilities import *
 
 
 class PubmedScraperAuthors:
@@ -21,12 +22,14 @@ class PubmedScraperAuthors:
         self.rows = [] #[ {"Author":, "AuthorKey":, "Title":, "Country":, "Affiliations":, "Other affiliations":,"PMID":,"URL":,"Source":}, ...]
         self.author_keys = set() # [ "de Roux A", ...]
         self.seen_pmid_author = set() # (pmid, author_key)
+        # self.first_cols = ["Comment","Author", "Author Role","Title", "Publication Type", "HCO", "Department", "City", "Country"]
         self.first_cols = ["Author", "Author Role","Title", "Publication Type", "HCO", "Department", "City", "Country"]
 
         self.df = pd.DataFrame()
         self.names_mapping_df = pd.DataFrame()
         self.potential_mapping_df = pd.DataFrame()
         self.collaborators_df = pd.DataFrame()
+        self.pubmeds_to_check = pd.DataFrame()
 
         self.pubmed_scraper = PubmedScraper(self.search, self.country, self.numyears)
         self.locale_normaliser = LocaleNormaliser(self.country)
@@ -127,9 +130,9 @@ class PubmedScraperAuthors:
             return pd.DataFrame()
 
         new_rows = []
-
         for pubmed in pubmeds:
 
+            # comment = self.pubmed_scraper.add_relevance_comment(pubmed)
             for i,author in enumerate(pubmed["author_list"]):
                 if not author:
                     continue
@@ -178,7 +181,7 @@ class PubmedScraperAuthors:
                     self.country, ""]
 
                 other_country, other_cities = self.locale_normaliser.extract_countries_cities(other_aff,
-                                                                                         not_original_country=True) if other_aff else [
+                                                                                         not_target_country=True) if other_aff else [
                     "", ""]
 
 
@@ -189,6 +192,7 @@ class PubmedScraperAuthors:
 
 
                 row = {
+                    # "Comment": comment,
                     "Author": display_name,
                     "Author Role": author_role,
                     "Author key": author_key,
@@ -217,25 +221,11 @@ class PubmedScraperAuthors:
 
 
     def extract(self):
-        self._build_country_aliases()
-
-        if self.country.lower() in ["united kingdom", "uk"]:
-            first_query = f"""({self.search}) AND (UK[Affiliation] OR "United Kingdom"[Affiliation] OR "Scotland"[Affiliation] OR "Nothern Ireland"[Affiliation])"""
-        elif "netherlands"in self.country.lower():
-            first_query = f"""({self.search}) AND (Netherlands[Affiliation] OR "The Netherlands"[Affiliation])"""
-        elif "spain"in self.country.lower():
-            first_query = f"""({self.search}) AND (Spain[Affiliation] OR España[Affiliation])"""
-        elif "germany"in self.country.lower():
-            first_query = f"""({self.search}) AND (Germany[Affiliation] OR Deutschland[Affiliation])"""
-        elif "italy"in self.country.lower():
-            first_query = f"""({self.search}) AND (Italy[Affiliation] OR Italia[Affiliation])"""
-        elif "switzerland"in self.country.lower():
-            first_query = f"""({self.search}) AND (Switzerland[Affiliation] OR Schweiz[Affiliation]) OR Suisse[Affiliation]) OR Svizzera[Affiliation])"""
-        else:
-            first_query = f"({self.search}) AND ({self.country}[Affiliation])"
+        self.country_aliases, self.locale_normaliser,self.name_normaliser = build_country_aliases(self.country, self.locale_normaliser,self.name_normaliser)
 
         print("     Running first query...")
         # first query: build author/article list only from in-country affiliations
+        first_query = fix_query_affil(self.search, self.country)
         self.get_pubmeds_Author(first_query)
 
         author_keys = sorted(self.author_keys)
@@ -248,8 +238,13 @@ class PubmedScraperAuthors:
             # second query: get all relevant publications of the authors found in query #1 even if not in the country of interest
             self.get_pubmeds_Author(second_query,allowed_author_keys=set(author_batch))
 
-
         self.hco_normaliser.df = self.df.copy()
+
+        # self.pubmeds_to_check = (
+        #     self.df.loc[self.df["Comment"].eq("Check, might not be relevant"),["Title", "Year", "doi", "URL"]]
+        #     .drop_duplicates(subset=["URL"])
+        #     .reset_index(drop=True)
+        # )
 
 
 
@@ -331,6 +326,7 @@ class PubmedScraperAuthors:
         ]
 
         return self.collaborators_df
+
     def main(self):
         print("\n🔍 Starting Pubmed extraction...")
         self.extract()
@@ -352,7 +348,7 @@ class PubmedScraperAuthors:
         self.get_collaborators()
 
         print("💾 Writing Excel output...")
-        self.pubmed_scraper.write_excel(self.df,self.names_mapping_df,self.potential_mapping_df,self.collaborators_df,scraper="author")
+        self.pubmed_scraper.write_excel(self.df,self.names_mapping_df,self.potential_mapping_df,self.collaborators_df,self.pubmeds_to_check,scraper="author")
 
 
 

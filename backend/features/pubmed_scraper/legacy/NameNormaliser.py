@@ -490,7 +490,6 @@ class NameNormaliser:
         mask_protected = self.df["Author"].isin(protected_names)
 
 
-        print("name norm", self.is_rare_disease)
         if not self.is_rare_disease:
             # authors that have affiliations in the country of interest
             mask_country_aff = self._country_is_target(self.df["Country"]).groupby(self.df["Author"]).transform("any")

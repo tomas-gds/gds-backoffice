@@ -13,7 +13,8 @@ class LocaleNormaliser:
         self.translated_country_name = self._translate_country_local()
 
     def _load_country_names(self, path=None):
-        path = Path(path) if path else Path(__file__).with_name("country_names.json")
+        path = Path(path) if path is not None else Path(__file__).resolve().parent / "country_names.json"
+
         with open(path, "r", encoding="utf-8") as f:
             return set(json.load(f))
 
@@ -90,7 +91,7 @@ class LocaleNormaliser:
         ]
         return str in bundeslaender
 
-    def extract_countries_cities(self, affiliations_str, not_original_country=False):
+    def extract_countries_cities(self, affiliations_str, not_target_country=False):
         EXCLUDE_WORDS = [
             "univer",
             "hospital",
@@ -135,6 +136,8 @@ class LocaleNormaliser:
             "milano": "Milan",
         }
 
+
+
         if not isinstance(affiliations_str, str) or not affiliations_str.strip():
             return ["", ""]
 
@@ -142,6 +145,7 @@ class LocaleNormaliser:
         cities = set()
 
         for aff in affiliations_str.split(";"):
+            original_aff = aff
             aff = aff.strip().lower()
             if not aff:
                 continue
@@ -164,10 +168,10 @@ class LocaleNormaliser:
             if country == "united kingdom":
                 country = "UK"
 
-            if not_original_country:
+            if not_target_country:
                 if self.is_country(country):
                     city = self.clean_city(parts[-2])
-                    if country in ["china", "people's republic of china"]:
+                    if country in ["china", "people's republic of china", "p r china", "pr china"]:
                         country = "china"
 
                     if country == "netherlands":
@@ -186,9 +190,13 @@ class LocaleNormaliser:
                             cities.add(city.title())
                         elif len(parts)>= 3 and not any(word in city for word in parts[-3]):
                             cities.add(parts[-3])
+                elif self.check_if_usa(original_aff):
+                    countries = {"USA"}
+                    cities.add(parts[-2])
 
 
             else:
+
                 original_country = self.country.lower()
                 translated_country = (self.translated_country_name or "").lower()
 
@@ -205,3 +213,19 @@ class LocaleNormaliser:
                 countries = {self.country}
 
         return [", ".join(countries), ", ".join(cities)]
+
+    def check_if_usa(self, aff):
+        us_state_abbreviations = {
+            "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
+            "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
+            "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
+            "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
+            "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+        }
+
+        parts = [p.strip() for p in aff.split(",") if p.strip()]
+        if not parts:
+            return False
+
+        last_part = re.sub(r"[\W_]+", "", parts[-1])
+        return last_part in us_state_abbreviations

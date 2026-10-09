@@ -3,6 +3,7 @@ import pandas as pd
 from .PubmedScraper import PubmedScraper
 from .LocaleNormaliser import LocaleNormaliser
 from .HCONormaliser import HCONormaliser
+from .utilities import *
 
 
 class PubmedScraperHCO:
@@ -12,7 +13,9 @@ class PubmedScraperHCO:
         self.numyears = numyears
         self.rare = rare
 
+        self.country_aliases = set()
         self.rows = [] #[ {"Author":, "AuthorKey":, "Title":, "Country":, "Affiliations":, "Other affiliations":,"PMID":,"URL":,"Source":}, ...]
+        # self.first_cols = ["Comment","HCO", "Department", "Title", "Publication Type", "City", "Country"]
         self.first_cols = ["HCO", "Department", "Title", "Publication Type", "City", "Country"]
 
         self.df = pd.DataFrame()
@@ -25,23 +28,14 @@ class PubmedScraperHCO:
         if self.country.lower() in ["usa","uk","uae"]:
             self.country = self.country.upper()
 
-        country_aliases = {self.country.lower()}
-        translated_country_name = self.locale_normaliser.translated_country_name
+        self.country_aliases, self.locale_normaliser = build_country_aliases(self.country, self.locale_normaliser)
 
-        if translated_country_name:
-            country_aliases.add(translated_country_name.lower())
-        if self.country.lower() in ["uk", "united kingdom"]:
-            country_aliases.add("united kingdom")
-            country_aliases.add("uk")
-            # country_aliases.add("england")
-            country_aliases.add("scotland")
-            # country_aliases.add("wales")
-            country_aliases.add("nothern ireland")
+        fixed_query = fix_query_affil(self.search, self.country)
+        pubmeds = self.pubmed_scraper.get_pubmeds(fixed_query)
 
-        pubmeds = self.pubmed_scraper.get_pubmeds(query)
 
         for pubmed in pubmeds:
-
+            # comment = self.pubmed_scraper.add_relevance_comment(pubmed)
             publication_in_country_affs = set()
             for author in pubmed["author_list"]:
                 if not author:
@@ -57,7 +51,7 @@ class PubmedScraperHCO:
 
                 for aff in author_affs_list:
                     if not self.rare:
-                        if aff and any(alias in aff.lower() for alias in country_aliases):
+                        if aff and any(alias in aff.lower() for alias in self.country_aliases):
                             publication_in_country_affs.add(aff.strip())
                     else:
                         publication_in_country_affs.add(aff.strip())
@@ -66,6 +60,7 @@ class PubmedScraperHCO:
                 country, cities = self.locale_normaliser.extract_countries_cities(in_country_aff)
 
                 self.rows.append({
+                    # "Comment": comment,
                     "Title": pubmed["title"],
                     "Publication Type": pubmed["publication_types"],
                     "NCT Code": pubmed["nct_codes"],
@@ -83,7 +78,8 @@ class PubmedScraperHCO:
 
 
     def extract(self):
-        query = f"({self.search}) AND ({self.country}[Affiliation])"
+        query = fix_query_affil(self.search, self.country)
+        # query = f"({self.search}) AND ({self.country}[Affiliation])"
 
         self.get_pubmedsHCO(query)
 

@@ -78,8 +78,7 @@ def run_legacy_workflow(
 ) -> BytesIO:
     """Run the CMD main() method with app inputs and an in-memory download.
 
-    rare_disease remains accepted for UI/API compatibility. The supplied CMD
-    code has no rare-disease branch, so this value does not alter its results.
+    rare_disease is passed to the selected scraper and its normalizers.
     """
     classes = {"author": PubmedScraperAuthors, "company": PubmedScraperAuthors,
                "hco": PubmedScraperHCO, "hcp_file": PubmedScraperHCP}

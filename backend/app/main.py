@@ -4,7 +4,7 @@ from io import BytesIO
 
 import pandas as pd
 from python_calamine import CalamineWorkbook
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -13,6 +13,10 @@ from backend.features.database_mapper.exporter import (
     create_csv_file,
     create_excel_workbook,
     create_text_excel_workbook,
+)
+from backend.features.database_mapper.duplicate_reports import (
+    create_duplicate_report,
+    validate_mapping_duplicates,
 )
 
 from backend.features.database_mapper.matcher import (
@@ -24,10 +28,13 @@ from backend.features.database_mapper.matcher import (
     prepare_search_columns,
     search_rows,
 )
+from backend.features.database_mapper.jobs import JobCancelled, JobConflict, JobFailed, mapper_jobs
 from backend.features.pubmed_scraper.legacy_adapter import (
     inspect_hcp_file,
     run_legacy_workflow,
 )
+from backend.features.pubmed_scraper.jobs import pubmed_jobs, JobCancelled as PubmedJobCancelled, JobConflict as PubmedJobConflict
+from backend.features.pubmed_scraper.export_formats import convert_workbook
 from backend.features.pubmed_scraper.review import (
     apply_name_decisions,
     potential_mapping_review,
@@ -180,8 +187,23 @@ async def pubmed_inspect_hcp_file(file: UploadFile = File(...)):
         raise HTTPException(400, f"Could not read the HCP file: {exc}") from exc
 
 
+@app.post("/pubmed/cancel/{job_id}")
+async def cancel_pubmed(job_id: str):
+    try:
+        return await pubmed_jobs.cancel(job_id)
+    except ValueError as exc:
+        raise HTTPException(400, "Invalid PubMed job ID.") from exc
+
+
+@app.on_event("shutdown")
+async def stop_pubmed_workers():
+    await pubmed_jobs.shutdown()
+
+
 @app.post("/pubmed/export")
 async def pubmed_export(
+    request: Request,
+    job_id: str = Form(""),
     search: str = Form(...),
     country: str = Form(...),
     years: int = Form(5),
@@ -192,7 +214,7 @@ async def pubmed_export(
     sheet: str = Form(""),
     name_column: str = Form(""),
     include_full_network: bool = Form(False),
-    rare_disease: bool = Form(True),
+    rare_disease: bool = Form(False),
 ):
     search, country = search.strip(), country.strip()
     defaults = pubmed_defaults()
@@ -207,7 +229,7 @@ async def pubmed_export(
     if not 1 <= years <= 30:
         raise HTTPException(400, "Years must be between 1 and 30.")
     try:
-        workbook = run_legacy_workflow(
+        workbook = await pubmed_jobs.run(dict(
             mode=mode, search=search, country=country, years=years,
             email=email, api_key=api_key,
             hcp_file=await hcp_file.read() if hcp_file else None,
@@ -215,7 +237,11 @@ async def pubmed_export(
             sheet=sheet, name_column=name_column,
             include_full_network=include_full_network,
             rare_disease=rare_disease,
-        )
+        ), job_id=job_id or None, request=request)
+    except PubmedJobCancelled as exc:
+        raise HTTPException(409, "PubMed search stopped.") from exc
+    except (PubmedJobConflict, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(502, f"PubMed could not complete the search: {exc}") from exc
     safe_search = "".join(char if char.isalnum() else "_" for char in search).strip("_") or "search"
@@ -264,6 +290,19 @@ async def inspect(file: UploadFile = File(...)):
     }
 
 
+@app.post("/database-mapper/cancel/{job_id}")
+async def cancel_database_mapper(job_id: str):
+    try:
+        return await mapper_jobs.cancel(job_id)
+    except ValueError as exc:
+        raise HTTPException(400, "Invalid Database Mapper job ID.") from exc
+
+
+@app.on_event("shutdown")
+async def stop_database_mapper_workers():
+    await mapper_jobs.shutdown()
+
+
 @app.post("/inspect-pair")
 async def inspect_pair(source: UploadFile = File(...), target: UploadFile = File(...)):
     source_frame, source_rows = await inspect_table(source)
@@ -277,40 +316,28 @@ async def inspect_pair(source: UploadFile = File(...), target: UploadFile = File
 
 @app.post("/match")
 async def match(
+    request: Request,
     source: UploadFile = File(...),
     target: UploadFile = File(...),
     column_pairs: str = Form(...),
+    job_id: str = Form(...),
 ):
-    source_frame = await read_table(source)
-    target_frame = await read_table(target)
     try:
         raw_pairs = json.loads(column_pairs)
     except json.JSONDecodeError as exc:
         raise HTTPException(400, "Column-pair configuration is not valid JSON.") from exc
-    pairs = validate_pairs(raw_pairs, source_frame, target_frame)
-    source_columns = [pair["source"] for pair in pairs]
-    target_columns = [pair["target"] for pair in pairs]
-    if (
-        not duplicated_rows(source_frame, source_columns).empty
-        or not duplicated_rows(target_frame, target_columns).empty
-    ):
-        raise HTTPException(
-            409,
-            "The selected mapping-field combinations contain duplicate values.",
-        )
-    matches = match_frames(source_frame, target_frame, pairs)
-    prepare_search_columns(target_frame, target_columns)
-    strategy = matching_strategy(len(source_frame), len(target_frame))
-    return {
-        "source_rows": len(source_frame),
-        "target_rows": len(target_frame),
-        "column_pairs": pairs,
-        "matching_strategy": strategy,
-        "possible_comparisons": len(source_frame) * len(target_frame),
-        "comparisons_performed": sum(match["candidates_considered"] for match in matches),
-        "candidate_limit": CANDIDATE_LIMIT if strategy == "indexed" else None,
-        "matches": matches,
-    }
+    if not isinstance(raw_pairs, list):
+        raise HTTPException(400, "Column-pair configuration is not valid JSON.")
+    try:
+        return await mapper_jobs.run({"source": await source.read(), "source_name": source.filename or "",
+                                      "target": await target.read(), "target_name": target.filename or "",
+                                      "pairs": raw_pairs}, job_id, request)
+    except JobCancelled as exc:
+        raise HTTPException(409, "Matching stopped.") from exc
+    except JobConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except JobFailed as exc:
+        raise HTTPException(exc.status, exc.detail) from exc
 
 
 @app.post("/validate-primary")
@@ -326,13 +353,12 @@ async def validate_primary(
     parsed_target_columns = parse_columns(target_columns, "File B")
     validate_columns(source_frame, parsed_source_columns, "File A")
     validate_columns(target_frame, parsed_target_columns, "File B")
-    source_duplicates = duplicated_rows(source_frame, parsed_source_columns)
-    target_duplicates = duplicated_rows(target_frame, parsed_target_columns)
-    return {
-        "valid": source_duplicates.empty and target_duplicates.empty,
-        "source_duplicate_rows": len(source_duplicates),
-        "target_duplicate_rows": len(target_duplicates),
-    }
+    return validate_mapping_duplicates(
+        source_frame,
+        target_frame,
+        parsed_source_columns,
+        parsed_target_columns,
+    )
 
 
 @app.post("/duplicate-report")
@@ -341,6 +367,7 @@ async def duplicate_report(
     target: UploadFile = File(...),
     source_columns: str = Form(...),
     target_columns: str = Form(...),
+    duplicate_kind: str = Form("exact"),
 ):
     source_frame = await read_table(source)
     target_frame = await read_table(target)
@@ -348,20 +375,21 @@ async def duplicate_report(
     parsed_target_columns = parse_columns(target_columns, "File B")
     validate_columns(source_frame, parsed_source_columns, "File A")
     validate_columns(target_frame, parsed_target_columns, "File B")
-    source_duplicates = duplicated_rows(source_frame, parsed_source_columns)
-    target_duplicates = duplicated_rows(target_frame, parsed_target_columns)
-
-    output = create_text_excel_workbook(
-        [
-            ("File A", source_duplicates.columns, source_duplicates.values.tolist()),
-            ("File B", target_duplicates.columns, target_duplicates.values.tolist()),
-        ]
-    )
+    try:
+        output = create_duplicate_report(
+            source_frame,
+            target_frame,
+            parsed_source_columns,
+            parsed_target_columns,
+            duplicate_kind,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return StreamingResponse(
         output,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
-            "Content-Disposition": 'attachment; filename="duplicate-primary-values.xlsx"'
+            "Content-Disposition": f'attachment; filename="{duplicate_kind}-duplicate-values.xlsx"'
         },
     )
 
@@ -475,3 +503,13 @@ async def create_export(
             "X-Unmapped-Target-Rows": str(unmapped_rows_appended),
         },
     )
+
+
+@app.post("/pubmed/convert-export")
+async def convert_pubmed_export(workbook: UploadFile = File(...), export_format: str = Form("xlsx")):
+    try:
+        output = convert_workbook(await workbook.read(), export_format)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    media_type = "text/csv; charset=utf-8" if export_format == "csv" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    return StreamingResponse(output, media_type=media_type, headers={"Content-Disposition": f'attachment; filename="pubmed.{export_format}"'})

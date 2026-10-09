@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Tools Workspace",
+  title: "GDS Backoffice",
   description: "A modular workspace for local data and research applications.",
   icons: {
     icon: "/favicon.svg",

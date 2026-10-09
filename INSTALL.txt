@@ -1,0 +1,27 @@
+Replace these files at the paths in the ZIP:
+features/pubmed-scraper/PubmedScraper.jsx
+backend/app/main.py
+src-tauri/src/lib.rs
+
+Add/replace:
+backend/features/pubmed_scraper/jobs.py
+backend/features/pubmed_scraper/export_formats.py
+
+Keep your existing legacy/ scraper files and legacy_adapter.py. Keep your existing Database Mapper jobs.py. This main.py merges the supplied mapper cancellation routes with PubMed cancellation from the earlier working patch.
+
+Restart the Python backend and rebuild/restart Tauri (e.g. your normal npm run tauri dev). A frontend refresh alone will not register the new save_pubmed_export Rust command. Keep the default single-worker backend setup for the in-memory cancellation registries.
+
+PubMed save dialog:
+- Excel or CSV selection, filename, optional different save location.
+- Excel retains all tabs and writes populated cells as text with Excel text formatting.
+- CSV includes PubMed Data only and is UTF-8 with BOM. CSV has no intrinsic cell types; programs opening it can infer numbers. Excel is the format to use for guaranteed text cell storage.
+- Uses Account userFolderDirectory (or userDirectory) and desktopDirectory (or desktopPath).
+- Background backup: <user folder directory>/PubMed Scraper.
+- Default export: <desktop directory>/GDS Backoffice/PubMed Scraper.
+- Folder creation and unused filenames follow the existing Database Mapper behavior.
+- Both copies have the selected file format and content.
+- The backup is omitted from normal success messages. The backup folder is not given the Windows Hidden attribute, matching the provided Database Mapper implementation.
+- Choosing another location changes the visible copy only. Cancelling its picker writes no backup or export file, though folders may already have been created.
+- Browser development mode offers a browser download only; dual filesystem saves require Tauri.
+
+Validation: 3 conversion tests, 7 PubMed cancellation tests and 4 frontend save-handler scenarios passed. Python syntax checks passed. Tests are included under tests/. Rust compilation and a complete frontend build/desktop run were not available here: no Cargo project/dependencies or Rust toolchain were supplied. Please rebuild Tauri after applying. Existing Database Mapper Rust commands were retained unchanged.

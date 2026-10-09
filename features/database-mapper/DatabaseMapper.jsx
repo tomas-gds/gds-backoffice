@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   ArrowLeft,
+  Database,
   Check,
   ChevronDown,
   Download,
@@ -13,6 +14,7 @@ import {
   LockKeyhole,
   PackageOpen,
   Plus,
+  RotateCcw,
   Search,
   Trash2,
   Upload,
@@ -75,6 +77,15 @@ function fileStem(file) {
   return file?.name?.replace(/\.[^.]+$/, "") || "Dataset";
 }
 
+function exportTimestamp(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return [
+    pad(date.getDate()),
+    pad(date.getMonth() + 1),
+    pad(date.getFullYear() % 100),
+  ].join("-") + `_${pad(date.getHours())}_${pad(date.getMinutes())}`;
+}
+
 function scoreStatus(score) {
   if (score === 100) return "Exact";
   if (score >= 85) return "Strong";
@@ -134,9 +145,23 @@ function BusyProgress({ label }) {
 
 function FileCard({ label, file, onFile, locked = false }) {
   const input = useRef(null);
+  async function chooseFile() {
+    if (locked) return;
+    try {
+      const selected = await invoke("pick_input_file");
+      if (!selected) return;
+      onFile(
+        new File([new Uint8Array(selected.bytes)], selected.name),
+        selected.path,
+      );
+    } catch {
+      // Browser development mode has no desktop command; use its normal picker.
+      input.current?.click();
+    }
+  }
   return (
     <button
-      onClick={() => !locked && input.current?.click()}
+      onClick={chooseFile}
       className={`rounded-xl border border-dashed p-5 text-left shadow-sm transition ${locked ? "cursor-default border-slate-200 bg-slate-50" : "border-slate-300 bg-white hover:border-cyan-500 hover:bg-cyan-50/30"}`}
     >
       <input
@@ -144,7 +169,7 @@ function FileCard({ label, file, onFile, locked = false }) {
         className="hidden"
         type="file"
         accept=".csv,.xlsx,.xls"
-        onChange={(event) => onFile(event.target.files?.[0] || null)}
+        onChange={(event) => onFile(event.target.files?.[0] || null, null)}
       />
       <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
         {label}
@@ -264,11 +289,13 @@ function MappingRow({
   );
 }
 
-export default function DatabaseMapper({ onBack, onAccount }) {
+export default function DatabaseMapper({ onBack, onAccount, account }) {
   const [projects, setProjects] = useState([]);
   const [activeProject, setActiveProject] = useState(null);
   const [source, setSource] = useState(null);
   const [target, setTarget] = useState(null);
+  const [sourcePath, setSourcePath] = useState("");
+  const [targetPath, setTargetPath] = useState("");
   const [inspection, setInspection] = useState(null);
   const [pairs, setPairs] = useState([]);
   const [result, setResult] = useState(null);
@@ -282,21 +309,28 @@ export default function DatabaseMapper({ onBack, onAccount }) {
   const [query, setQuery] = useState("");
   const [inspecting, setInspecting] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [leaveOpen, setLeaveOpen] = useState(false);
   const [error, setError] = useState("");
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [exportFileName, setExportFileName] = useState("");
+  const [exportFormat, setExportFormat] = useState("xlsx");
   const [chooseExportLocation, setChooseExportLocation] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportMessage, setExportMessage] = useState("");
   const [checkingDuplicates, setCheckingDuplicates] = useState(false);
   const [duplicateWarning, setDuplicateWarning] = useState(null);
   const [duplicateDialogOpen, setDuplicateDialogOpen] = useState(false);
+  const [duplicateResolutionDialogOpen, setDuplicateResolutionDialogOpen] = useState(false);
   const [duplicateReportLoading, setDuplicateReportLoading] = useState(false);
+  const [reloadDialogOpen, setReloadDialogOpen] = useState(false);
+  const [reloadingFiles, setReloadingFiles] = useState(false);
   const [restoredFiles, setRestoredFiles] = useState(null);
   const [autosaveReady, setAutosaveReady] = useState(false);
   const [autosaveStatus, setAutosaveStatus] = useState("");
   const [lastSavedAt, setLastSavedAt] = useState(null);
   const [confidenceFilter, setConfidenceFilter] = useState("all");
+  const [confidenceMinimum, setConfidenceMinimum] = useState("50");
+  const [confidenceMaximum, setConfidenceMaximum] = useState("75");
   const [selectedReviewIds, setSelectedReviewIds] = useState([]);
   const [resolutionConfidenceFilter, setResolutionConfidenceFilter] = useState("all");
   const [selectedResolutionIds, setSelectedResolutionIds] = useState([]);
@@ -310,9 +344,60 @@ export default function DatabaseMapper({ onBack, onAccount }) {
   const [duplicateCandidateSelections, setDuplicateCandidateSelections] = useState({});
   const [duplicateRecordResolutions, setDuplicateRecordResolutions] = useState({});
   const importProjectInput = useRef(null);
+  const preservePairsOnReload = useRef(false);
+  const reloadSourceInput = useRef(null);
+  const reloadTargetInput = useRef(null);
+  const pendingReloadSource = useRef(null);
+  const activeMatchRun = useRef(null);
+  const userFolderDirectory = account?.userFolderDirectory || account?.userDirectory || "";
+  const desktopDirectory = account?.desktopDirectory || account?.desktopPath || "";
+
+  useEffect(() => () => {
+    const active = activeMatchRun.current;
+    if (!active) return;
+    active.controller.abort();
+    fetch(`${API_URL}/database-mapper/cancel/${active.id}`, { method: "POST", keepalive: true }).catch(() => {});
+  }, []);
+
+  function requestProjectBack() {
+    if (activeMatchRun.current) {
+      setLeaveOpen(true);
+    } else {
+      setActiveProject(null);
+    }
+  }
+
+  function stopAndLeave() {
+    const active = activeMatchRun.current;
+    if (active) {
+      // Do not wait for the backend response: aborting this request lets the
+      // running job detect the disconnect and terminate immediately.
+      fetch(`${API_URL}/database-mapper/cancel/${active.id}`, {
+        method: "POST",
+        keepalive: true,
+      }).catch(() => {});
+      active.controller.abort();
+      if (activeMatchRun.current === active) activeMatchRun.current = null;
+    }
+    setLoading(false);
+    setLeaveOpen(false);
+    setActiveProject(null);
+  }
 
   const sourceDisplay = source || restoredFiles?.source;
   const targetDisplay = target || restoredFiles?.target;
+  const sourceExactDuplicateRows =
+    duplicateWarning?.source_exact_duplicate_rows ||
+    duplicateWarning?.source_duplicate_rows ||
+    0;
+  const targetExactDuplicateRows =
+    duplicateWarning?.target_exact_duplicate_rows ||
+    duplicateWarning?.target_duplicate_rows ||
+    0;
+  const sourceAlmostDuplicateRows = duplicateWarning?.source_almost_duplicate_rows ?? 0;
+  const targetAlmostDuplicateRows = duplicateWarning?.target_almost_duplicate_rows ?? 0;
+  const hasExactDuplicateRows = sourceExactDuplicateRows > 0 || targetExactDuplicateRows > 0;
+  const hasAlmostDuplicateRows = sourceAlmostDuplicateRows > 0 || targetAlmostDuplicateRows > 0;
 
   const matches = result?.matches || [];
   const effectiveMatches = matches.map((match) => ({
@@ -353,9 +438,7 @@ export default function DatabaseMapper({ onBack, onAccount }) {
     (group) => !confirmedDuplicateGroups.includes(group.signature),
   );
   const duplicatesResolved = allApproved && unconfirmedDuplicateGroups.length === 0;
-  const duplicateStepIsOpen =
-    openStep === 5 ||
-    (allApproved && unconfirmedDuplicateGroups.length > 0 && (openStep === 3 || openStep === 4));
+  const duplicateStepIsOpen = openStep === 5;
   const mappedTargetIndices = new Set(
     effectiveMatches
       .filter(
@@ -370,15 +453,21 @@ export default function DatabaseMapper({ onBack, onAccount }) {
     0,
     (result?.target_rows || 0) - mappedTargetIndices.size,
   );
-  const matchesConfidence = (match, filter) => {
+  const matchesConfidence = (match, filter, minimum, maximum) => {
     if (filter === "all") return true;
+    if (filter === "none") return match.score === null || match.score === undefined;
+    if (match.score === null || match.score === undefined) return false;
+    const score = Number(match.score);
+    if (filter === "higher") return score > Number(minimum);
+    if (filter === "lower") return score < Number(minimum);
+    if (filter === "between") return score >= Number(minimum) && score <= Number(maximum);
     if (filter === "95-100") return match.score >= 95;
     if (filter === "85-94") return match.score >= 85 && match.score < 95;
     if (filter === "below-85") return match.score !== null && match.score < 85;
-    return match.score === null;
+    return false;
   };
   const filtered = effectiveMatches.filter((match) =>
-    matchesConfidence(match, confidenceFilter) && `${match.source_name} ${match.target_name} ${(match.components || [])
+    matchesConfidence(match, confidenceFilter, confidenceMinimum, confidenceMaximum) && `${match.source_name} ${match.target_name} ${(match.components || [])
       .flatMap((component) => [component.source_value, component.target_value])
       .join(" ")}`
       .toLowerCase()
@@ -392,9 +481,20 @@ export default function DatabaseMapper({ onBack, onAccount }) {
     pairs.every((pair) => pair.source && pair.target && pair.weight > 0);
   const canRunMatching = validPairs && !checkingDuplicates;
 
+  useEffect(() => {
+    if (allApproved && unconfirmedDuplicateGroups.length > 0 && openStep !== 5) {
+      setDuplicateResolutionDialogOpen(true);
+    }
+    if (unconfirmedDuplicateGroups.length === 0) {
+      setDuplicateResolutionDialogOpen(false);
+    }
+  }, [allApproved, unconfirmedDuplicateGroups.length, openStep]);
+
   function applySession(saved) {
     setSource(saved?.sourceFile || null);
     setTarget(saved?.targetFile || null);
+    setSourcePath(saved?.sourcePath || "");
+    setTargetPath(saved?.targetPath || "");
     setRestoredFiles(saved?.files || null);
     setInspection(saved?.inspection || null);
     setPairs(saved?.pairs || []);
@@ -408,13 +508,16 @@ export default function DatabaseMapper({ onBack, onAccount }) {
     setOpenStep(saved?.openStep || (saved?.result ? 3 : saved?.inspection ? 2 : 1));
     setQuery(saved?.query || "");
     setLastSavedAt(saved?.savedAt || null);
-    setConfidenceFilter(saved?.confidenceFilter || "all");
+    setConfidenceFilter(["all", "higher", "lower", "between"].includes(saved?.confidenceFilter) ? saved.confidenceFilter : "all");
+    setConfidenceMinimum(saved?.confidenceMinimum || "50");
+    setConfidenceMaximum(saved?.confidenceMaximum || "75");
     setSelectedReviewIds([]);
     setResolutionConfidenceFilter(saved?.resolutionConfidenceFilter || "all");
     setSelectedResolutionIds([]);
     setConfirmedDuplicateGroups(saved?.confirmedDuplicateGroups || []);
     setDuplicateCandidateSelections(saved?.duplicateCandidateSelections || {});
     setDuplicateRecordResolutions(saved?.duplicateRecordResolutions || {});
+    setExportFormat(saved?.exportFormat === "csv" ? "csv" : "xlsx");
     setError("");
     setExportMessage("");
   }
@@ -489,12 +592,17 @@ export default function DatabaseMapper({ onBack, onAccount }) {
           openStep,
           query,
           confidenceFilter,
+          confidenceMinimum,
+          confidenceMaximum,
           resolutionConfidenceFilter,
           confirmedDuplicateGroups,
           duplicateCandidateSelections,
           duplicateRecordResolutions,
+          exportFormat,
           sourceFile: source || undefined,
           targetFile: target || undefined,
+          sourcePath,
+          targetPath,
         };
         await saveProjectSession(session);
         const reviewedCount = (result?.matches || []).filter(
@@ -524,6 +632,8 @@ export default function DatabaseMapper({ onBack, onAccount }) {
     activeProject?.id,
     source,
     target,
+    sourcePath,
+    targetPath,
     restoredFiles,
     inspection,
     pairs,
@@ -537,10 +647,13 @@ export default function DatabaseMapper({ onBack, onAccount }) {
     openStep,
     query,
     confidenceFilter,
+    confidenceMinimum,
+    confidenceMaximum,
     resolutionConfidenceFilter,
     confirmedDuplicateGroups,
     duplicateCandidateSelections,
     duplicateRecordResolutions,
+    exportFormat,
   ]);
 
   async function openProject(project) {
@@ -715,14 +828,17 @@ export default function DatabaseMapper({ onBack, onAccount }) {
         if (cancelled) return;
         setInspection(data);
         setOpenStep(2);
-        setPairs([
-          {
-            source: "",
-            target: "",
-            method: "similarity",
-            weight: 100,
-          },
-        ]);
+        if (!preservePairsOnReload.current) {
+          setPairs([
+            {
+              source: "",
+              target: "",
+              method: "similarity",
+              weight: 100,
+            },
+          ]);
+        }
+        preservePairsOnReload.current = false;
       } catch (failure) {
         if (!cancelled)
           setError(
@@ -731,7 +847,10 @@ export default function DatabaseMapper({ onBack, onAccount }) {
               : "Could not reach the local Python service.",
           );
       } finally {
-        if (!cancelled) setInspecting(false);
+        if (!cancelled) {
+          setInspecting(false);
+          setReloadingFiles(false);
+        }
       }
     }
     inspectFiles();
@@ -739,6 +858,85 @@ export default function DatabaseMapper({ onBack, onAccount }) {
       cancelled = true;
     };
   }, [source, target, autosaveReady, restoredFiles, inspection]);
+
+  function applyReloadedFiles(nextSource, nextTarget, nextSourcePath = "", nextTargetPath = "") {
+    // Keep the field configuration, but clear every result and decision made
+    // after pairing before asking the backend to inspect the files again.
+    preservePairsOnReload.current = true;
+    setReloadingFiles(true);
+    setSource(nextSource);
+    setTarget(nextTarget);
+    setSourcePath(nextSourcePath);
+    setTargetPath(nextTargetPath);
+    setRestoredFiles(null);
+    setInspection(null);
+    setResult(null);
+    setDecisions({});
+    setReplacements({});
+    setCandidateSelections({});
+    setManualSearches({});
+    setShowResolution(false);
+    setExpandedDetails({});
+    setQuery("");
+    setConfidenceFilter("all");
+    setConfidenceMinimum("50");
+    setConfidenceMaximum("75");
+    setResolutionConfidenceFilter("all");
+    setSelectedReviewIds([]);
+    setSelectedResolutionIds([]);
+    setConfirmedDuplicateGroups([]);
+    setDuplicateCandidateSelections({});
+    setDuplicateRecordResolutions({});
+    setDuplicateWarning(null);
+    setDuplicateDialogOpen(false);
+    setExportDialogOpen(false);
+    setExportMessage("");
+    setError("");
+    setOpenStep(1);
+  }
+
+  async function confirmReloadFiles() {
+    if (!source || !target) return;
+    setReloadDialogOpen(false);
+    pendingReloadSource.current = null;
+    if (sourcePath && targetPath) {
+      setReloadingFiles(true);
+      try {
+        const reloaded = await invoke("reload_input_files", {
+          sourcePath,
+          targetPath,
+        });
+        applyReloadedFiles(
+          new File([new Uint8Array(reloaded.source.bytes)], reloaded.source.name),
+          new File([new Uint8Array(reloaded.target.bytes)], reloaded.target.name),
+          reloaded.source.path,
+          reloaded.target.path,
+        );
+      } catch (failure) {
+        setReloadingFiles(false);
+        setError(
+          failure instanceof Error
+            ? `Could not reload the original files: ${failure.message}`
+            : "Could not reload the original files. They may have been moved or deleted.",
+        );
+      }
+      return;
+    }
+    reloadSourceInput.current?.click();
+  }
+
+  function selectReloadSource(file) {
+    if (!file) return;
+    pendingReloadSource.current = file;
+    reloadTargetInput.current?.click();
+  }
+
+  function selectReloadTarget(file) {
+    const nextSource = pendingReloadSource.current;
+    pendingReloadSource.current = null;
+    if (!nextSource || !file) return;
+    applyReloadedFiles(nextSource, file);
+  }
 
   function updatePair(index, nextPair) {
     setDuplicateWarning(null);
@@ -804,12 +1002,11 @@ export default function DatabaseMapper({ onBack, onAccount }) {
       if (!response.ok) {
         throw new Error(data.detail || "Could not validate selected fields.");
       }
-      if (!data.valid) {
+      if (!data.valid || data.has_almost_duplicates) {
         setDuplicateWarning(data);
         setDuplicateDialogOpen(true);
-        return false;
       }
-      return true;
+      return data;
     } catch (failure) {
       setError(
         failure instanceof Error
@@ -824,8 +1021,14 @@ export default function DatabaseMapper({ onBack, onAccount }) {
 
   async function runMatching() {
     if (!source || !target || !canRunMatching) return;
-    const fieldsAreUnique = await validateSelectedFields();
-    if (!fieldsAreUnique) return;
+    const duplicateCheck = await validateSelectedFields();
+    if (!duplicateCheck?.valid) return;
+    if (duplicateCheck.has_almost_duplicates) return;
+    startMatching();
+  }
+
+  async function startMatching() {
+    setDuplicateDialogOpen(false);
     setLoading(true);
     setError("");
     setResult(null);
@@ -842,27 +1045,35 @@ export default function DatabaseMapper({ onBack, onAccount }) {
     body.append("source", source);
     body.append("target", target);
     body.append("column_pairs", JSON.stringify(pairs));
+    const active = { id: crypto.randomUUID(), controller: new AbortController() };
+    activeMatchRun.current = active;
+    body.append("job_id", active.id);
     try {
       const response = await fetch(`${API_URL}/match`, {
         method: "POST",
         body,
+        signal: active.controller.signal,
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Matching failed.");
       setResult(data);
       setOpenStep(3);
     } catch (failure) {
+      if (failure instanceof DOMException && failure.name === "AbortError") return;
       setError(
         failure instanceof Error
           ? failure.message
           : "Could not reach the local Python service.",
       );
     } finally {
-      setLoading(false);
+      if (activeMatchRun.current === active) {
+        activeMatchRun.current = null;
+        setLoading(false);
+      }
     }
   }
 
-  async function downloadDuplicateReport() {
+  async function downloadDuplicateReport(kind) {
     if (!source || !target || !validPairs) return;
     setDuplicateReportLoading(true);
     setError("");
@@ -877,6 +1088,7 @@ export default function DatabaseMapper({ onBack, onAccount }) {
       "target_columns",
       JSON.stringify(pairs.map((pair) => pair.target)),
     );
+    body.append("duplicate_kind", kind);
 
     try {
       const response = await fetch(`${API_URL}/duplicate-report`, {
@@ -890,7 +1102,8 @@ export default function DatabaseMapper({ onBack, onAccount }) {
       const blob = await response.blob();
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
-      link.download = `${fileStem(sourceDisplay)}-${fileStem(targetDisplay)} duplicate values.xlsx`;
+      const label = kind === "exact" ? "exact duplicates" : "almost duplicates";
+      link.download = `${fileStem(sourceDisplay)}-${fileStem(targetDisplay)} ${label}.xlsx`;
       link.click();
       URL.revokeObjectURL(link.href);
     } catch (failure) {
@@ -1082,6 +1295,11 @@ export default function DatabaseMapper({ onBack, onAccount }) {
         Object.entries(current).filter(([, resolution]) => resolution.groupSignature !== group.signature),
       ),
     );
+    // Completing every record in the group is equivalent to confirming the
+    // duplicate: retain the selected assignments and remove it from review.
+    setConfirmedDuplicateGroups((current) => [
+      ...new Set([...current, group.signature]),
+    ]);
   }
 
   function confirmDuplicateGroups(groups) {
@@ -1169,14 +1387,14 @@ export default function DatabaseMapper({ onBack, onAccount }) {
       return;
     }
 
-    const fileName = `${trimmedName.replace(/\.(csv|xlsx)$/i, "")}.csv`;
+    const fileName = `${trimmedName.replace(/\.(csv|xlsx)$/i, "")}_${exportTimestamp()}.${exportFormat}`;
     setExporting(true);
     setExportMessage("");
 
     try {
       const body = new FormData();
       body.append("export_payload", JSON.stringify(buildExportData()));
-      body.append("export_format", "csv");
+      body.append("export_format", exportFormat);
       body.append("include_unmapped_target", String(includeUnmappedTarget));
       body.append(
         "mapped_target_indices",
@@ -1197,7 +1415,7 @@ export default function DatabaseMapper({ onBack, onAccount }) {
       });
       if (!response.ok) {
         const data = await response.json();
-        throw new Error(data.detail || "Could not create the CSV file.");
+        throw new Error(data.detail || "Could not create the export file.");
       }
       if (includeUnmappedTarget) {
         const appendedHeader = response.headers.get("X-Unmapped-Target-Rows");
@@ -1208,29 +1426,36 @@ export default function DatabaseMapper({ onBack, onAccount }) {
           );
         }
       }
-      const csvBytes = await response.arrayBuffer();
+      const exportBytes = await response.arrayBuffer();
 
       if (window.__TAURI_INTERNALS__) {
-        const savedPath = await invoke("save_binary", {
-          bytes: Array.from(new Uint8Array(csvBytes)),
-          defaultFileName: fileName,
-          chooseLocation: chooseExportLocation,
-        });
-        if (!savedPath) {
-          setExporting(false);
-          return;
+        if (!userFolderDirectory.trim() || !desktopDirectory.trim()) {
+          throw new Error(
+            "Set both User Folder Directory and Desktop Directory in Account before exporting.",
+          );
         }
+        const savedFiles = await invoke("save_database_mapper_export", {
+          bytes: Array.from(new Uint8Array(exportBytes)),
+          defaultFileName: fileName,
+          userFolderDirectory,
+          desktopDirectory,
+          chooseExportLocation,
+        });
+        if (!savedFiles) return;
         setExportDialogOpen(false);
         setExportMessage(
           includeUnmappedTarget
-            ? `Saved to ${savedPath} with ${unmappedTargetCount.toLocaleString()} unused File B rows.`
-            : `Saved to ${savedPath}`,
+            ? `Saved to ${savedFiles.exportPath} with ${unmappedTargetCount.toLocaleString()} unused ${targetDisplay?.name || "File B"} rows.`
+            : `Saved to ${savedFiles.exportPath}`,
         );
       } else {
         const link = document.createElement("a");
         link.href = URL.createObjectURL(
-          new Blob([csvBytes], {
-            type: "text/csv;charset=utf-8",
+          new Blob([exportBytes], {
+            type:
+              exportFormat === "csv"
+                ? "text/csv;charset=utf-8"
+                : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
           }),
         );
         link.download = fileName;
@@ -1268,7 +1493,7 @@ export default function DatabaseMapper({ onBack, onAccount }) {
               >
                 <ArrowLeft size={19} />
               </Button>
-              <img src="/database-mapper.svg" alt="" className="h-10 w-10 rounded-lg" />
+              <div className="grid h-10 w-10 place-items-center rounded-lg bg-[#e6f8fb] text-[#087d98]"><Database size={22} strokeWidth={2} /></div>
               <div>
                 <p className="font-bold">Database Mapper</p>
                 <p className="text-xs text-slate-300">Your mapping projects</p>
@@ -1285,7 +1510,7 @@ export default function DatabaseMapper({ onBack, onAccount }) {
             <div>
               <h1 className="text-3xl font-bold tracking-tight">Projects</h1>
               <p className="mt-2 text-slate-500">
-                Leave a mapping in progress and return to it whenever you need.
+                Match records between two datasets.
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -1460,6 +1685,26 @@ export default function DatabaseMapper({ onBack, onAccount }) {
 
   return (
     <main className="min-h-screen bg-[#f4f7fa] text-slate-950">
+      <input
+        ref={reloadSourceInput}
+        className="hidden"
+        type="file"
+        accept=".csv,.xlsx,.xls"
+        onChange={(event) => {
+          selectReloadSource(event.target.files?.[0] || null);
+          event.target.value = "";
+        }}
+      />
+      <input
+        ref={reloadTargetInput}
+        className="hidden"
+        type="file"
+        accept=".csv,.xlsx,.xls"
+        onChange={(event) => {
+          selectReloadTarget(event.target.files?.[0] || null);
+          event.target.value = "";
+        }}
+      />
       <header className="border-b border-slate-200 bg-[#0c2538] text-white">
         <div className="mx-auto flex max-w-[1450px] items-center justify-between px-5 py-4 lg:px-8">
           <div className="flex items-center gap-3">
@@ -1467,12 +1712,12 @@ export default function DatabaseMapper({ onBack, onAccount }) {
               variant="ghost"
               size="icon"
               aria-label="Back to projects"
-              onClick={() => setActiveProject(null)}
+              onClick={requestProjectBack}
               className="text-white hover:bg-white/10 hover:text-white"
             >
               <ArrowLeft size={19} />
             </Button>
-            <img src="/database-mapper.svg" alt="" className="h-9 w-9 rounded-lg" />
+            <div className="grid h-9 w-9 place-items-center rounded-lg bg-[#e6f8fb] text-[#087d98]"><Database size={20} strokeWidth={2} /></div>
             <div>
               <p className="text-[15px] font-bold">
                 Database Mapper
@@ -1515,22 +1760,34 @@ export default function DatabaseMapper({ onBack, onAccount }) {
               <p className="mb-4 text-sm text-slate-500">
                 Select the two datasets you want to map.
               </p>
+              {inspection && source && target && (
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+                  <p className="text-sm text-slate-600">
+                    Reload the current files while keeping your configured field pairs.
+                  </p>
+                  <Button variant="outline" size="sm" onClick={() => setReloadDialogOpen(true)} disabled={reloadingFiles || inspecting}>
+                    <RotateCcw size={16} /> Reload files
+                  </Button>
+                </div>
+              )}
               <div className="grid gap-3 lg:grid-cols-2">
                 <FileCard
                   label="File A · base dataset"
                   file={sourceDisplay}
-                  locked={Boolean(inspection && source && target)}
-                  onFile={(file) => {
+                  locked={Boolean((inspection && source && target) || reloadingFiles)}
+                  onFile={(file, path) => {
                     setSource(file);
+                    setSourcePath(path || "");
                     setOpenStep(1);
                   }}
                 />
                 <FileCard
                   label="File B · match candidates"
                   file={targetDisplay}
-                  locked={Boolean(inspection && source && target)}
-                  onFile={(file) => {
+                  locked={Boolean((inspection && source && target) || reloadingFiles)}
+                  onFile={(file, path) => {
                     setTarget(file);
+                    setTargetPath(path || "");
                     setOpenStep(1);
                   }}
                 />
@@ -1651,13 +1908,6 @@ export default function DatabaseMapper({ onBack, onAccount }) {
                       <>
                         Scored from {result.column_pairs.length} selected field{" "}
                         {result.column_pairs.length === 1 ? "pair" : "pairs"}.
-                        <span className="mt-0.5 block text-xs">
-                          {result.matching_strategy === "indexed"
-                            ? `Large-file mode: ${result.comparisons_performed.toLocaleString()} shortlisted comparisons instead of ${result.possible_comparisons.toLocaleString()}.`
-                            : result.matching_strategy === "exhaustive"
-                              ? `Exhaustive mode: all ${result.possible_comparisons.toLocaleString()} candidate pairs compared.`
-                              : "Matching strategy details are unavailable for this result."}
-                        </span>
                       </>
                     ) : (
                       `${reviewed} of ${matches.length} reviewed`
@@ -1675,14 +1925,54 @@ export default function DatabaseMapper({ onBack, onAccount }) {
                     value={confidenceFilter}
                     onChange={(event) => setConfidenceFilter(event.target.value)}
                     className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-500"
-                    aria-label="Filter by confidence"
+                    aria-label="Confidence comparison"
                   >
                     <option value="all">All confidence levels</option>
-                    <option value="95-100">95–100%</option>
-                    <option value="85-94">85–94%</option>
-                    <option value="below-85">Below 85%</option>
-                    <option value="none">No confidence</option>
+                    <option value="higher">Higher than</option>
+                    <option value="lower">Lower than</option>
+                    <option value="between">In between</option>
                   </select>
+                  {confidenceFilter !== "all" && (
+                    <>
+                      <select
+                        value={confidenceMinimum}
+                        onChange={(event) => {
+                          const nextMinimum = event.target.value;
+                          setConfidenceMinimum(nextMinimum);
+                          if (confidenceFilter === "between" && Number(nextMinimum) > Number(confidenceMaximum)) {
+                            setConfidenceMaximum(nextMinimum);
+                          }
+                        }}
+                        className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-500"
+                        aria-label={confidenceFilter === "higher" ? "Minimum confidence" : confidenceFilter === "lower" ? "Maximum confidence" : "Lower confidence"}
+                      >
+                        {Array.from({ length: 21 }, (_, index) => index * 5).map((percentage) => (
+                          <option key={percentage} value={percentage}>{percentage}%</option>
+                        ))}
+                      </select>
+                      {confidenceFilter === "between" && (
+                        <>
+                          <span className="self-center text-sm text-slate-500">and</span>
+                          <select
+                            value={confidenceMaximum}
+                            onChange={(event) => {
+                              const nextMaximum = event.target.value;
+                              setConfidenceMaximum(nextMaximum);
+                              if (Number(nextMaximum) < Number(confidenceMinimum)) {
+                                setConfidenceMinimum(nextMaximum);
+                              }
+                            }}
+                            className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-500"
+                            aria-label="Upper confidence"
+                          >
+                            {Array.from({ length: 21 }, (_, index) => index * 5).map((percentage) => (
+                              <option key={percentage} value={percentage}>{percentage}%</option>
+                            ))}
+                          </select>
+                        </>
+                      )}
+                    </>
+                  )}
                   <label className="relative min-w-[240px] flex-1">
                     <Search
                       className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
@@ -2340,7 +2630,7 @@ export default function DatabaseMapper({ onBack, onAccount }) {
           </section>
         )}
 
-        {result && allApproved && duplicateMatchGroups.length > 0 && (
+        {result && allApproved && unconfirmedDuplicateGroups.length > 0 && (
           <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
             <button
               type="button"
@@ -2366,22 +2656,8 @@ export default function DatabaseMapper({ onBack, onAccount }) {
 
             {duplicateStepIsOpen && (
               <div className="space-y-4 border-t border-slate-200 bg-slate-50 p-5">
-                {unconfirmedDuplicateGroups.length > 0 && (
-                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
-                    <p className="text-sm text-amber-900">
-                      Keep every current File B assignment and accept all {unconfirmedDuplicateGroups.length} duplicate {unconfirmedDuplicateGroups.length === 1 ? "group" : "groups"}.
-                    </p>
-                    <Button
-                      size="sm"
-                      onClick={() => confirmDuplicateGroups(unconfirmedDuplicateGroups)}
-                      className="bg-amber-600 text-white hover:bg-amber-700"
-                    >
-                      <Check size={15} /> Accept all duplicates
-                    </Button>
-                  </div>
-                )}
-                {duplicateMatchGroups.map((group) => {
-                  const confirmed = confirmedDuplicateGroups.includes(group.signature);
+                {unconfirmedDuplicateGroups.map((group) => {
+                  const confirmed = false;
                   return (
                     <div key={group.signature} className="overflow-hidden rounded-xl border border-slate-200 bg-white">
                       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-amber-50 px-4 py-3">
@@ -2421,11 +2697,20 @@ export default function DatabaseMapper({ onBack, onAccount }) {
                           const alternatives = (match.candidates || []).filter(
                             (candidate) => targetAssignmentKey(candidate) !== group.key,
                           );
-                          const selectedIndex = duplicateCandidateSelections[match.id] ?? alternatives[0]?.target_index ?? "__NO_MATCH__";
+                          const currentCandidate = {
+                            target_index: match.target_index,
+                            target_name: match.target_name,
+                            score: match.score,
+                            reasons: match.reasons || [],
+                            components: match.components || [],
+                          };
+                          const candidateOptions = [currentCandidate, ...alternatives];
+                          const selectedIndex = duplicateCandidateSelections[match.id] ?? currentCandidate.target_index ?? "__NO_MATCH__";
                           const noMatchSelected = selectedIndex === "__NO_MATCH__";
                           const manualSearchSelected = selectedIndex === "__MANUAL_SEARCH__";
                           const manualSearch = manualSearches[match.id] || { filters: {}, results: [], selectedIndex: "", loading: false, error: "" };
-                          const selectedCandidate = selectedResolutionCandidate(match, alternatives, selectedIndex);
+                          const selectedCandidate = selectedResolutionCandidate(match, candidateOptions, selectedIndex);
+                          const currentMatchSelected = String(selectedIndex) === String(currentCandidate.target_index);
                           const supportingFields = (selectedCandidate?.components || []).slice(1);
                           const stagedResolution =
                             duplicateRecordResolutions[match.id]?.groupSignature === group.signature
@@ -2465,12 +2750,15 @@ export default function DatabaseMapper({ onBack, onAccount }) {
                                   <p className="mt-1 font-bold">{match.source_name || "Blank value"}</p>
                                 </div>
                                 <label className="block text-sm font-semibold text-slate-700">
-                                  Change File B match
+                                  Current File B match
                                   <select
                                     value={selectedIndex}
                                     onChange={(event) => setDuplicateCandidateSelections((current) => ({ ...current, [match.id]: event.target.value }))}
                                     className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm font-normal outline-none focus:border-cyan-500"
                                   >
+                                    <option value={currentCandidate.target_index}>
+                                      Current: {currentCandidate.target_name} — {currentCandidate.score}%
+                                    </option>
                                     {alternatives.map((candidate) => (
                                       <option key={candidate.target_index} value={candidate.target_index}>
                                         {candidate.target_name} — {candidate.score}%
@@ -2483,13 +2771,13 @@ export default function DatabaseMapper({ onBack, onAccount }) {
                                 <div className="flex h-10 gap-2">
                                   <Button
                                     variant="outline"
-                                    onClick={() => stageDuplicateResolution(group, match, alternatives, selectedIndex, true)}
+                                    onClick={() => stageDuplicateResolution(group, match, candidateOptions, selectedIndex, true)}
                                   >
                                     Keep current
                                   </Button>
                                   <Button
-                                    disabled={!selectedCandidate}
-                                    onClick={() => stageDuplicateResolution(group, match, alternatives, selectedIndex)}
+                                    disabled={!selectedCandidate || currentMatchSelected}
+                                    onClick={() => stageDuplicateResolution(group, match, candidateOptions, selectedIndex)}
                                     className="bg-cyan-600 text-white hover:bg-cyan-700 disabled:bg-slate-200"
                                   >
                                     <Check size={16} /> {noMatchSelected ? "Confirm no match" : manualSearchSelected ? "Approve manual match" : "Change match"}
@@ -2610,14 +2898,14 @@ export default function DatabaseMapper({ onBack, onAccount }) {
             <div>
               <h2 className="text-xl font-bold">Export results</h2>
               <p className="mt-1 text-sm text-slate-500">
-                Download the completed mapping as a CSV file. {unmappedTargetCount.toLocaleString()} File B rows are not currently mapped.
+                Download the completed mapping as an Excel workbook or CSV file. {unmappedTargetCount.toLocaleString()} File B rows are not currently mapped.
               </p>
             </div>
             <Button
               onClick={openExportDialog}
               className="shrink-0 bg-[#0c2538] text-white hover:bg-[#163d58]"
             >
-              <Download size={15} /> Export CSV
+              <Download size={15} /> Export results
             </Button>
           </section>
         )}
@@ -2629,6 +2917,72 @@ export default function DatabaseMapper({ onBack, onAccount }) {
         )}
       </div>
 
+      {duplicateResolutionDialogOpen && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/50 p-4" role="presentation">
+          <div role="alertdialog" aria-modal="true" aria-labelledby="duplicate-resolution-title" className="w-full max-w-2xl rounded-xl bg-white p-6 shadow-2xl">
+            <div className="flex items-start gap-3">
+              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-amber-100 text-amber-800">!</div>
+              <div>
+                <h2 id="duplicate-resolution-title" className="text-xl font-bold">Duplicate matches found</h2>
+                <p className="mt-1 text-sm leading-6 text-slate-600">
+                  {unconfirmedDuplicateGroups.length} {unconfirmedDuplicateGroups.length === 1 ? "File B value is" : "File B values are"} currently assigned to more than one File A record.
+                </p>
+              </div>
+            </div>
+            <p className="mt-4 text-sm text-slate-600">
+              You can keep every current assignment and continue to download, or review the current matches individually in Step 5.
+            </p>
+            <div className="mt-6 flex flex-wrap justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  confirmDuplicateGroups(unconfirmedDuplicateGroups);
+                  setDuplicateResolutionDialogOpen(false);
+                  setOpenStep(0);
+                }}
+              >
+                Skip and continue to download
+              </Button>
+              <Button
+                onClick={() => {
+                  setDuplicateResolutionDialogOpen(false);
+                  setOpenStep(5);
+                }}
+                className="bg-amber-600 text-white hover:bg-amber-700"
+              >
+                Resolve duplicates
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {reloadDialogOpen && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/50 p-4" role="presentation">
+          <div role="alertdialog" aria-modal="true" aria-labelledby="reload-files-title" className="w-full max-w-3xl rounded-xl bg-white p-6 shadow-2xl">
+            <div className="flex items-start gap-3">
+              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-amber-100 text-amber-800">
+                <RotateCcw size={20} />
+              </div>
+              <div>
+                <h2 id="reload-files-title" className="text-xl font-bold">Reload both files?</h2>
+                <p className="mt-1 text-sm leading-6 text-slate-600">
+                  {sourcePath && targetPath
+                    ? "The app will reread the same File A and File B from their original locations."
+                    : "You will select File A and File B once; future reloads can use their original locations automatically."} Your configured field pairs will be kept; matching results, approvals, manual selections, duplicate decisions, and export progress will be reset.
+                </p>
+              </div>
+            </div>
+            <div className="mt-6 flex flex-wrap justify-end gap-2">
+              <Button variant="outline" onClick={() => setReloadDialogOpen(false)}>Cancel</Button>
+              <Button onClick={confirmReloadFiles} className="bg-amber-600 text-white hover:bg-amber-700">
+                <RotateCcw size={16} /> Reload files and reset results
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {duplicateDialogOpen && duplicateWarning && (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-slate-950/50 p-4"
@@ -2638,7 +2992,7 @@ export default function DatabaseMapper({ onBack, onAccount }) {
             role="alertdialog"
             aria-modal="true"
             aria-labelledby="duplicate-dialog-title"
-            className="w-full max-w-lg rounded-xl bg-white p-6 shadow-2xl"
+            className="w-full max-w-4xl rounded-xl bg-white p-6 shadow-2xl"
           >
             <div className="flex items-start gap-3">
               <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-amber-100 text-amber-800">
@@ -2646,67 +3000,80 @@ export default function DatabaseMapper({ onBack, onAccount }) {
               </div>
               <div>
                 <h2 id="duplicate-dialog-title" className="text-xl font-bold">
-                  Mapping-field combinations must be unique
+                  Review duplicate mapping values
                 </h2>
                 <p className="mt-1 text-sm leading-6 text-slate-500">
-                  A row is duplicated only when its value-to-match field and all
-                  selected supporting fields match another row. Accents,
-                  capitalization, and punctuation are ignored in this check.
+                  The selected mapping fields are checked in two ways: exact
+                  character-for-character duplicates, and duplicates created
+                  only after normalisation (accents, capitalization, punctuation,
+                  and spacing are ignored).
                 </p>
               </div>
             </div>
 
-            <div className="mt-5 grid gap-3 sm:grid-cols-2">
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  {fileStem(sourceDisplay)}
+            {hasExactDuplicateRows && <section className="mt-5 overflow-hidden rounded-lg border border-amber-200 bg-amber-50">
+              <div className="border-b border-amber-200 bg-amber-100 px-4 py-3">
+                <h3 className="font-bold text-amber-950">Exact duplicates</h3>
+                <p className="mt-1 text-sm text-amber-900">
+                  The selected mapping values are identical character-for-character. These must be corrected before matching can start.
                 </p>
-                <p className="mt-1 text-lg font-bold">
-                  {duplicateWarning.source_duplicate_rows.toLocaleString()}
-                </p>
-                <p className="text-xs text-slate-500">duplicated rows</p>
               </div>
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  {fileStem(targetDisplay)}
-                </p>
-                <p className="mt-1 text-lg font-bold">
-                  {duplicateWarning.target_duplicate_rows.toLocaleString()}
-                </p>
-                <p className="text-xs text-slate-500">duplicated rows</p>
+              <div className="grid divide-y divide-amber-200 sm:grid-cols-2 sm:divide-x sm:divide-y-0">
+                <div className="p-4">
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-400">{fileStem(sourceDisplay)}</p>
+                  <p className="mt-1 text-2xl font-bold text-slate-900">{sourceExactDuplicateRows.toLocaleString()}</p>
+                  <p className="text-xs text-slate-500">exact duplicate rows</p>
+                </div>
+                <div className="p-4">
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-400">{fileStem(targetDisplay)}</p>
+                  <p className="mt-1 text-2xl font-bold text-slate-900">{targetExactDuplicateRows.toLocaleString()}</p>
+                  <p className="text-xs text-slate-500">exact duplicate rows</p>
+                </div>
               </div>
-            </div>
+              {hasExactDuplicateRows && <div className="border-t border-amber-200 bg-amber-50 px-4 py-3"><Button size="sm" variant="outline" disabled={duplicateReportLoading} onClick={() => downloadDuplicateReport("exact")}>{duplicateReportLoading ? <LoaderCircle className="animate-spin" size={16} /> : <Download size={16} />}Download exact duplicates</Button></div>}
+            </section>}
 
-            <p className="mt-4 text-sm text-slate-600">
-              Download an Excel workbook containing every duplicated row and all
-              columns from the original files. The workbook has separate File A
-              and File B tabs.
-            </p>
+            {hasAlmostDuplicateRows && <section className="mt-4 overflow-hidden rounded-lg border border-sky-200">
+              <div className="border-b border-sky-200 bg-sky-50 px-4 py-3">
+                <h3 className="font-bold text-sky-950">Almost duplicates</h3>
+                <p className="mt-1 text-sm text-sky-900">
+                  These values become identical only after normalisation. They are warnings and do not block matching.
+                </p>
+              </div>
+              <div className="grid divide-y divide-slate-200 sm:grid-cols-2 sm:divide-x sm:divide-y-0">
+                <div className="p-4">
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-400">{fileStem(sourceDisplay)}</p>
+                  <p className="mt-1 text-2xl font-bold text-slate-900">{sourceAlmostDuplicateRows.toLocaleString()}</p>
+                  <p className="text-xs text-slate-500">almost duplicate rows</p>
+                </div>
+                <div className="p-4">
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-400">{fileStem(targetDisplay)}</p>
+                  <p className="mt-1 text-2xl font-bold text-slate-900">{targetAlmostDuplicateRows.toLocaleString()}</p>
+                  <p className="text-xs text-slate-500">almost duplicate rows</p>
+                </div>
+              </div>
+              {hasAlmostDuplicateRows && <div className="border-t border-sky-200 bg-white px-4 py-3"><Button size="sm" variant="outline" disabled={duplicateReportLoading} onClick={() => downloadDuplicateReport("almost")}>{duplicateReportLoading ? <LoaderCircle className="animate-spin" size={16} /> : <Download size={16} />}Download almost duplicates</Button></div>}
+            </section>}
+
+            {hasExactDuplicateRows ? (
+              <p className="mt-4 text-sm text-amber-800">Exact duplicates were found. Matching is blocked until they are corrected or different mapping fields are selected.</p>
+            ) : (
+              <p className="mt-4 text-sm text-slate-600">No exact duplicates were found. You may continue matching.</p>
+            )}
 
             {duplicateReportLoading && (
               <BusyProgress label="Creating the duplicate-values workbook…" />
             )}
 
             <div className="mt-5 flex flex-wrap justify-end gap-2">
-              <Button
-                variant="outline"
-                disabled={duplicateReportLoading}
-                onClick={() => setDuplicateDialogOpen(false)}
-              >
-                Return to field pairs
+              <Button variant="outline" disabled={duplicateReportLoading} onClick={() => setDuplicateDialogOpen(false)}>
+                Cancel
               </Button>
-              <Button
-                disabled={duplicateReportLoading}
-                onClick={downloadDuplicateReport}
-                className="bg-amber-600 text-white hover:bg-amber-700"
-              >
-                {duplicateReportLoading ? (
-                  <LoaderCircle className="animate-spin" size={16} />
-                ) : (
-                  <Download size={16} />
-                )}
-                Download duplicate report
-              </Button>
+              {!hasExactDuplicateRows && (
+                <Button disabled={duplicateReportLoading} onClick={startMatching} className="bg-cyan-600 text-white hover:bg-cyan-700">
+                  Continue matching
+                </Button>
+              )}
             </div>
           </div>
         </div>
@@ -2734,7 +3101,7 @@ export default function DatabaseMapper({ onBack, onAccount }) {
                   Export matching file
                 </h2>
                 <p className="mt-1 text-sm text-slate-500">
-                  Choose the CSV file name and where it should be saved.
+                  Choose an export format and file name. The export will be saved to Desktop/GDS Backoffice/Database Mapper.
                 </p>
               </div>
               <Button
@@ -2747,6 +3114,52 @@ export default function DatabaseMapper({ onBack, onAccount }) {
                 <X size={18} />
               </Button>
             </div>
+
+            <fieldset className="mt-5">
+              <legend className="text-sm font-semibold text-slate-700">
+                Export format
+              </legend>
+              <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                <label
+                  className={`cursor-pointer rounded-lg border p-3 transition ${
+                    exportFormat === "xlsx"
+                      ? "border-cyan-600 bg-cyan-50 ring-1 ring-cyan-600"
+                      : "border-slate-200 bg-white hover:border-slate-300"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="export-format"
+                    value="xlsx"
+                    checked={exportFormat === "xlsx"}
+                    onChange={() => setExportFormat("xlsx")}
+                    className="sr-only"
+                  />
+                  <span className="block text-sm font-semibold text-slate-800">
+                    Excel workbook (.xlsx)
+                  </span>
+                </label>
+                <label
+                  className={`cursor-pointer rounded-lg border p-3 transition ${
+                    exportFormat === "csv"
+                      ? "border-cyan-600 bg-cyan-50 ring-1 ring-cyan-600"
+                      : "border-slate-200 bg-white hover:border-slate-300"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="export-format"
+                    value="csv"
+                    checked={exportFormat === "csv"}
+                    onChange={() => setExportFormat("csv")}
+                    className="sr-only"
+                  />
+                  <span className="block text-sm font-semibold text-slate-800">
+                    CSV file (.csv)
+                  </span>
+                </label>
+              </div>
+            </fieldset>
 
             <label className="mt-5 block text-sm font-semibold text-slate-700">
               File name
@@ -2761,7 +3174,7 @@ export default function DatabaseMapper({ onBack, onAccount }) {
               />
             </label>
 
-            <label className="mt-3 inline-flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+            <label className="mt-3 flex w-fit cursor-pointer items-center gap-2 text-sm text-slate-700">
               <input
                 type="checkbox"
                 checked={chooseExportLocation}
@@ -2774,22 +3187,17 @@ export default function DatabaseMapper({ onBack, onAccount }) {
             </label>
 
             {unmappedTargetCount > 0 && (
-              <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <label className="mt-3 flex w-fit cursor-pointer items-center gap-2 text-sm text-slate-700">
                 <input
                   type="checkbox"
                   checked={includeUnmappedTarget}
                   onChange={(event) =>
                     setIncludeUnmappedTarget(event.target.checked)
                   }
-                  className="mt-0.5 h-4 w-4 accent-cyan-600"
+                  className="h-4 w-4 accent-cyan-600"
                 />
                 <span>
-                  <span className="block text-sm font-semibold text-slate-700">
-                    Include {unmappedTargetCount.toLocaleString()} unused File B rows
-                  </span>
-                  <span className="mt-0.5 block text-xs leading-5 text-slate-500">
-                    These rows will be appended to the CSV with empty File A columns and their File B values preserved.
-                  </span>
+                  Include {unmappedTargetCount.toLocaleString()} unused {targetDisplay?.name || "File B"} rows
                 </span>
               </label>
             )}
@@ -2801,7 +3209,7 @@ export default function DatabaseMapper({ onBack, onAccount }) {
             )}
 
             {exporting && (
-              <BusyProgress label="Creating and saving the CSV file…" />
+              <BusyProgress label={`Creating and saving the ${exportFormat === "csv" ? "CSV" : "Excel"} file…`} />
             )}
 
             <div className="mt-5 flex justify-end gap-2">
@@ -2822,10 +3230,23 @@ export default function DatabaseMapper({ onBack, onAccount }) {
                 ) : (
                   <Download size={16} />
                 )}
-                {chooseExportLocation ? "Choose location" : "Save to Downloads"}
+                Save export
               </Button>
             </div>
           </div>
+        </div>
+      )}
+
+      {leaveOpen && (
+        <div className="fixed inset-0 z-[60] grid place-items-center bg-slate-950/45 p-5" role="dialog" aria-modal="true" aria-labelledby="stop-matching-title">
+          <section className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+            <h2 id="stop-matching-title" className="text-xl font-bold">Stop matching?</h2>
+            <p className="mt-3 text-sm text-slate-600">Matching is running. Going back will stop it. Would you like to leave?</p>
+            <div className="mt-6 flex justify-end gap-3">
+              <Button variant="outline" autoFocus onClick={() => setLeaveOpen(false)}>Stay</Button>
+              <Button onClick={stopAndLeave} className="bg-rose-700 text-white hover:bg-rose-800">Stop and leave</Button>
+            </div>
+          </section>
         </div>
       )}
 

@@ -30,8 +30,20 @@ def normalize(value):
     return " ".join(re.sub(r"[^a-z0-9]+", " ", text).split())
 
 
-def duplicated_rows(frame, columns):
-    selected_columns = [columns] if isinstance(columns, str) else list(columns)
+def _selected_columns(columns):
+    return [columns] if isinstance(columns, str) else list(columns)
+
+
+def exact_duplicated_rows(frame, columns):
+    """Rows whose selected mapping values are identical character-for-character."""
+    selected_columns = _selected_columns(columns)
+    raw = frame[selected_columns].fillna("").astype(str)
+    return frame.loc[raw.duplicated(keep=False)].copy()
+
+
+def normalized_duplicated_rows(frame, columns):
+    """Rows duplicated after the mapper's normalisation rules are applied."""
+    selected_columns = _selected_columns(columns)
     normalized = pd.DataFrame(
         {
             f"column_{index}": frame[column].map(normalize)
@@ -40,6 +52,41 @@ def duplicated_rows(frame, columns):
         index=frame.index,
     )
     return frame.loc[normalized.duplicated(keep=False)].copy()
+
+
+def almost_duplicated_rows(frame, columns):
+    """Normalised duplicates, excluding only literal duplicate rows.
+
+    For example, the different ``Hôpital Haut-Lévêque`` spellings are retained
+    as almost duplicates.  Rows whose original selected values are an exact
+    repeated combination remain exclusively in the exact-duplicates report.
+    """
+    selected_columns = _selected_columns(columns)
+    raw = frame[selected_columns].fillna("").astype(str)
+    normalized = pd.DataFrame(
+        {
+            f"column_{index}": frame[column].map(normalize)
+            for index, column in enumerate(selected_columns)
+        },
+        index=frame.index,
+    )
+    normalized_duplicate = normalized.duplicated(keep=False)
+    exact_duplicate = raw.duplicated(keep=False)
+    return frame.loc[normalized_duplicate & ~exact_duplicate].copy()
+
+
+def duplicate_summary(frame, columns):
+    """Return both duplicate classes for the selected composite mapping key."""
+    return {
+        "exact": exact_duplicated_rows(frame, columns),
+        "almost": almost_duplicated_rows(frame, columns),
+    }
+
+
+# Backwards-compatible alias for existing validation routes.  Existing routes
+# must now treat this as exact, not normalised, duplicate detection.
+def duplicated_rows(frame, columns):
+    return exact_duplicated_rows(frame, columns)
 
 
 def prepare_search_columns(frame, columns):

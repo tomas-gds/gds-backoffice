@@ -35,9 +35,9 @@ class PubmedScraperHCP:
         self.collaborators_df = pd.DataFrame()
 
         self.pubmed_scraper = PubmedScraper(self.search, self.country, self.numyears)
-        self.pubmed_scraper_authors = PubmedScraperAuthors(self.search, self.country, self.numyears)
+        self.pubmed_scraper_authors = PubmedScraperAuthors(self.search, self.country, self.numyears, rare=self.rare)
         self.locale_normaliser = LocaleNormaliser(self.country)
-        self.name_normaliser = NameNormaliser()
+        self.name_normaliser = NameNormaliser(self.rare)
         self.hco_normaliser = HCONormaliser(self.df, self.country)
 
     def _ask_for_name_column(self, df):
@@ -602,7 +602,7 @@ class PubmedScraperHCP:
             )
 
     def get_pubmeds_HCP(self, query, allowed_author_keys=None):
-        temp_df = self.pubmed_scraper_authors.get_pubmeds_Author(query,allowed_author_keys=allowed_author_keys,rare=self.rare).copy()
+        temp_df = self.pubmed_scraper_authors.get_pubmeds_Author(query,allowed_author_keys=allowed_author_keys).copy()
 
         if temp_df.empty:
             return pd.DataFrame()
@@ -612,6 +612,7 @@ class PubmedScraperHCP:
         return temp_df
 
     def extract(self):
+        self.pubmed_scraper_authors._build_country_aliases()
         client_author_keys = sorted(self.client_author_keys)
 
 
