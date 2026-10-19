@@ -129,16 +129,92 @@ function Badge({ children, tone = "slate" }) {
 function BusyProgress({ label }) {
   return (
     <div className="mt-4" role="status" aria-live="polite">
-      <div className="mb-1.5 text-sm font-medium text-cyan-800">
+      <div className="mb-1.5 text-sm font-medium text-[#651357]">
         <span>{label}</span>
       </div>
       <div
         role="progressbar"
         aria-label={label}
-        className="h-2 overflow-hidden rounded-full bg-cyan-100"
+        className="h-2 overflow-hidden rounded-full bg-[#f5e8f2]"
       >
-        <div className="operation-progress-indicator h-full w-1/3 rounded-full bg-cyan-600" />
+        <div className="operation-progress-indicator h-full w-1/3 rounded-full bg-[#7B176B]" />
       </div>
+    </div>
+  );
+}
+
+function ExportFieldSelector({ label, columns, value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const selected = value || [];
+  const allSelected = columns.length > 0 && columns.every((column) => selected.includes(column));
+
+  function toggleColumn(column) {
+    onChange(
+      selected.includes(column)
+        ? selected.filter((item) => item !== column)
+        : [...selected, column],
+    );
+  }
+
+  function toggleAll() {
+    onChange(allSelected ? [] : [...columns]);
+  }
+
+  const selectionLabel = selected.length === 0
+    ? "Select fields"
+    : selected.length === 1
+      ? selected[0]
+      : `${selected.length} fields selected`;
+
+  return (
+    <div className="mt-4">
+      <p className="text-sm font-medium text-slate-700">{label}</p>
+      {columns.length === 0 ? (
+        <p className="mt-1 text-xs text-[#596571]">No additional columns are available.</p>
+      ) : (
+        <div className="relative mt-1">
+          <button
+            type="button"
+            onClick={() => setOpen((current) => !current)}
+            className="flex h-10 w-full items-center justify-between rounded-md border border-slate-300 bg-white px-3 text-left text-sm font-normal outline-none focus:border-[#a53c91] focus:ring-2 focus:ring-[#f5e8f2]"
+            aria-expanded={open}
+          >
+            <span className="truncate">{selectionLabel}</span>
+            <ChevronDown
+              size={16}
+              className={`ml-3 shrink-0 text-[#596571] transition-transform ${open ? "rotate-180" : ""}`}
+            />
+          </button>
+          {open && (
+            <div className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-md border border-slate-300 bg-white p-1 shadow-lg">
+              <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-2 text-sm font-semibold text-slate-800 hover:bg-[#fbf2f9]">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={toggleAll}
+                  className="h-4 w-4 accent-[#951C81]"
+                />
+                Select all
+              </label>
+              <div className="my-1 border-t border-slate-200" />
+              {columns.map((column) => (
+                <label
+                  key={column}
+                  className="flex cursor-pointer items-center gap-2 rounded px-2 py-2 text-sm text-slate-700 hover:bg-[#fbf2f9]"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(column)}
+                    onChange={() => toggleColumn(column)}
+                    className="h-4 w-4 accent-[#951C81]"
+                  />
+                  <span className="break-all">{column}</span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -162,7 +238,7 @@ function FileCard({ label, file, onFile, locked = false }) {
   return (
     <button
       onClick={chooseFile}
-      className={`rounded-xl border border-dashed p-5 text-left shadow-sm transition ${locked ? "cursor-default border-slate-200 bg-slate-50" : "border-slate-300 bg-white hover:border-cyan-500 hover:bg-cyan-50/30"}`}
+      className={`rounded-xl border border-dashed p-5 text-left shadow-sm transition ${locked ? "cursor-default border-slate-200 bg-slate-50" : "border-slate-300 bg-white hover:border-[#bb63aa] hover:bg-[#fbf2f9]/30"}`}
     >
       <input
         ref={input}
@@ -186,7 +262,7 @@ function FileCard({ label, file, onFile, locked = false }) {
           </p>
         </div>
         {file ? (
-          locked ? <LockKeyhole className="text-slate-400" size={20} /> : <FileSpreadsheet className="text-cyan-600" />
+          locked ? <LockKeyhole className="text-slate-400" size={20} /> : <FileSpreadsheet className="text-[#7B176B]" />
         ) : (
           <Upload className="text-slate-400" />
         )}
@@ -204,7 +280,7 @@ function MappingRow({
   onRemove,
 }) {
   const fieldClass =
-    "h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100";
+    "h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#a53c91] focus:ring-2 focus:ring-[#f5e8f2]";
   return (
     <div className="grid gap-3 rounded-lg border border-slate-200 bg-slate-50/70 p-3 lg:grid-cols-[1fr_1fr_150px_110px_40px] lg:items-center">
       <label>
@@ -331,6 +407,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
   const [confidenceFilter, setConfidenceFilter] = useState("all");
   const [confidenceMinimum, setConfidenceMinimum] = useState("50");
   const [confidenceMaximum, setConfidenceMaximum] = useState("75");
+  const [decisionFilter, setDecisionFilter] = useState("all");
   const [selectedReviewIds, setSelectedReviewIds] = useState([]);
   const [resolutionConfidenceFilter, setResolutionConfidenceFilter] = useState("all");
   const [selectedResolutionIds, setSelectedResolutionIds] = useState([]);
@@ -343,6 +420,9 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
   const [confirmedDuplicateGroups, setConfirmedDuplicateGroups] = useState([]);
   const [duplicateCandidateSelections, setDuplicateCandidateSelections] = useState({});
   const [duplicateRecordResolutions, setDuplicateRecordResolutions] = useState({});
+  const [includeAdditionalFields, setIncludeAdditionalFields] = useState(false);
+  const [sourceAdditionalExportColumns, setSourceAdditionalExportColumns] = useState([]);
+  const [targetAdditionalExportColumns, setTargetAdditionalExportColumns] = useState([]);
   const importProjectInput = useRef(null);
   const preservePairsOnReload = useRef(false);
   const reloadSourceInput = useRef(null);
@@ -453,6 +533,12 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
     0,
     (result?.target_rows || 0) - mappedTargetIndices.size,
   );
+  const sourceExportColumns = (inspection?.source?.columns || []).filter(
+    (column) => !result?.column_pairs?.some((pair) => pair.source === column),
+  );
+  const targetExportColumns = (inspection?.target?.columns || []).filter(
+    (column) => !result?.column_pairs?.some((pair) => pair.target === column),
+  );
   const matchesConfidence = (match, filter, minimum, maximum) => {
     if (filter === "all") return true;
     if (filter === "none") return match.score === null || match.score === undefined;
@@ -466,8 +552,11 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
     if (filter === "below-85") return match.score !== null && match.score < 85;
     return false;
   };
+  const matchesDecision = (match) =>
+    decisionFilter === "all" ||
+    (decisions[match.id] || match.decision) === decisionFilter;
   const filtered = effectiveMatches.filter((match) =>
-    matchesConfidence(match, confidenceFilter, confidenceMinimum, confidenceMaximum) && `${match.source_name} ${match.target_name} ${(match.components || [])
+    matchesConfidence(match, confidenceFilter, confidenceMinimum, confidenceMaximum) && matchesDecision(match) && `${match.source_name} ${match.target_name} ${(match.components || [])
       .flatMap((component) => [component.source_value, component.target_value])
       .join(" ")}`
       .toLowerCase()
@@ -511,6 +600,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
     setConfidenceFilter(["all", "higher", "lower", "between"].includes(saved?.confidenceFilter) ? saved.confidenceFilter : "all");
     setConfidenceMinimum(saved?.confidenceMinimum || "50");
     setConfidenceMaximum(saved?.confidenceMaximum || "75");
+    setDecisionFilter(["all", "approved", "skipped", "pending"].includes(saved?.decisionFilter) ? saved.decisionFilter : "all");
     setSelectedReviewIds([]);
     setResolutionConfidenceFilter(saved?.resolutionConfidenceFilter || "all");
     setSelectedResolutionIds([]);
@@ -594,6 +684,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
           confidenceFilter,
           confidenceMinimum,
           confidenceMaximum,
+          decisionFilter,
           resolutionConfidenceFilter,
           confirmedDuplicateGroups,
           duplicateCandidateSelections,
@@ -649,6 +740,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
     confidenceFilter,
     confidenceMinimum,
     confidenceMaximum,
+    decisionFilter,
     resolutionConfidenceFilter,
     confirmedDuplicateGroups,
     duplicateCandidateSelections,
@@ -881,6 +973,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
     setConfidenceFilter("all");
     setConfidenceMinimum("50");
     setConfidenceMaximum("75");
+    setDecisionFilter("all");
     setResolutionConfidenceFilter("all");
     setSelectedReviewIds([]);
     setSelectedResolutionIds([]);
@@ -1341,17 +1434,40 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
 
   function buildExportData() {
     const configuredPairs = result.column_pairs;
+    const sourceExtraColumns = includeAdditionalFields
+      ? sourceAdditionalExportColumns
+      : [];
+    const targetExtraColumns = includeAdditionalFields
+      ? targetAdditionalExportColumns
+      : [];
     return {
       include_unmapped_target: includeUnmappedTarget,
       expected_unmapped_target_count: includeUnmappedTarget
         ? unmappedTargetCount
         : 0,
+      source_extra_columns: sourceExtraColumns,
+      target_extra_columns: targetExtraColumns,
+      source_mapping_column_count: configuredPairs.length,
+      target_mapping_column_count: configuredPairs.length,
+      row_indices: effectiveMatches.map((match) => ({
+        source_index: match.source_index,
+        target_index:
+          (decisions[match.id] || match.decision) === "skipped"
+            ? null
+            : match.target_index,
+      })),
       headers: [
         ...configuredPairs.map(
           (pair) => `${fileStem(sourceDisplay)} - ${pair.source}`,
         ),
+        ...sourceExtraColumns.map(
+          (column) => `${fileStem(sourceDisplay)} - ${column}`,
+        ),
         ...configuredPairs.map(
           (pair) => `${fileStem(targetDisplay)} - ${pair.target}`,
+        ),
+        ...targetExtraColumns.map(
+          (column) => `${fileStem(targetDisplay)} - ${column}`,
         ),
       ],
       rows: effectiveMatches.map((match) => {
@@ -1361,9 +1477,11 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
           ...configuredPairs.map(
             (_, index) => components[index]?.source_value ?? "",
           ),
+          ...sourceExtraColumns.map(() => ""),
           ...configuredPairs.map((_, index) =>
             skipped ? "" : (components[index]?.target_value ?? ""),
           ),
+          ...targetExtraColumns.map(() => ""),
         ];
       }),
     };
@@ -1376,6 +1494,9 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
     );
     setChooseExportLocation(false);
     setIncludeUnmappedTarget(false);
+    setIncludeAdditionalFields(false);
+    setSourceAdditionalExportColumns([]);
+    setTargetAdditionalExportColumns([]);
     setExportMessage("");
     setExportDialogOpen(true);
   }
@@ -1402,13 +1523,26 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
       );
       body.append(
         "target_columns",
-        JSON.stringify(result.column_pairs.map((pair) => pair.target)),
+        JSON.stringify([
+          ...result.column_pairs.map((pair) => pair.target),
+          ...(includeAdditionalFields ? targetAdditionalExportColumns : []),
+        ]),
       );
       body.append(
         "source_column_count",
-        String(result.column_pairs.length),
+        String(
+          result.column_pairs.length +
+            (includeAdditionalFields ? sourceAdditionalExportColumns.length : 0),
+        ),
       );
-      if (includeUnmappedTarget && target) body.append("target", target);
+      if (includeAdditionalFields) {
+        body.append("source_extra_columns", JSON.stringify(sourceAdditionalExportColumns));
+        body.append("target_extra_columns", JSON.stringify(targetAdditionalExportColumns));
+      }
+      if (includeAdditionalFields && source) body.append("source", source);
+      if ((includeUnmappedTarget || includeAdditionalFields) && target) {
+        body.append("target", target);
+      }
       const response = await fetch(`${API_URL}/create-export`, {
         method: "POST",
         body,
@@ -1480,8 +1614,8 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
   if (!activeProject) {
     return (
       <>
-      <main className="min-h-screen bg-[#f4f7fa] text-slate-950">
-        <header className="border-b border-slate-200 bg-[#0c2538] text-white">
+      <main className="min-h-screen bg-[#f5f6f7] text-slate-950">
+        <header className="border-b border-slate-700 bg-[#951C81] text-white">
           <div className="mx-auto flex max-w-[1450px] items-center justify-between px-5 py-5 lg:px-8">
             <div className="flex items-center gap-3">
               <Button
@@ -1493,7 +1627,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
               >
                 <ArrowLeft size={19} />
               </Button>
-              <div className="grid h-10 w-10 place-items-center rounded-lg bg-[#e6f8fb] text-[#087d98]"><Database size={22} strokeWidth={2} /></div>
+              <div className="grid h-10 w-10 place-items-center rounded-lg bg-[#f5e8f2] text-[#651357]"><Database size={22} strokeWidth={2} /></div>
               <div>
                 <p className="font-bold">Database Mapper</p>
                 <p className="text-xs text-slate-300">Your mapping projects</p>
@@ -1528,7 +1662,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
               >
                 <PackageOpen size={17} /> Import project
               </Button>
-              <Button onClick={addProject} className="bg-cyan-600 text-white hover:bg-cyan-700">
+              <Button onClick={addProject} className="bg-[#F39100] text-white hover:bg-[#df8500]">
                 <Plus size={17} /> New project
               </Button>
             </div>
@@ -1548,9 +1682,9 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
             <button
               type="button"
               onClick={addProject}
-              className="mt-8 grid w-full place-items-center rounded-2xl border-2 border-dashed border-slate-300 bg-white px-6 py-16 text-center transition hover:border-cyan-500 hover:bg-cyan-50/30"
+              className="mt-8 grid w-full place-items-center rounded-2xl border-2 border-dashed border-slate-300 bg-white px-6 py-16 text-center transition hover:border-[#bb63aa] hover:bg-[#fbf2f9]/30"
             >
-              <FolderOpen className="text-cyan-600" size={38} />
+              <FolderOpen className="text-[#7B176B]" size={38} />
               <span className="mt-4 text-lg font-bold">Create your first mapping project</span>
               <span className="mt-1 text-sm text-slate-500">Choose two files, configure the mapping, and progress will save automatically.</span>
             </button>
@@ -1563,14 +1697,14 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                 return (
                   <article
                     key={project.id}
-                    className="group flex w-full flex-col gap-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-cyan-300 hover:shadow-md lg:flex-row lg:items-center"
+                    className="group flex w-full flex-col gap-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-[#bb63aa] hover:shadow-md lg:flex-row lg:items-center"
                   >
                     <button
                       type="button"
                       onClick={() => openProject(project)}
                       className="grid min-w-0 flex-1 gap-4 text-left lg:grid-cols-[48px_minmax(260px,1.3fr)_minmax(260px,1fr)_minmax(220px,0.8fr)] lg:items-center"
                     >
-                      <div className="grid h-12 w-12 place-items-center rounded-lg bg-cyan-50 text-cyan-700">
+                      <div className="grid h-12 w-12 place-items-center rounded-lg bg-[#fbf2f9] text-[#651357]">
                           <FolderOpen size={20} />
                       </div>
                       <div className="min-w-0">
@@ -1596,7 +1730,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                       </div>
                     </button>
                     <div className="flex shrink-0 items-center justify-end gap-2 border-t border-slate-100 pt-3 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
-                      <Button variant="ghost" size="sm" onClick={() => openProject(project)} className="text-cyan-700">
+                      <Button variant="ghost" size="sm" onClick={() => openProject(project)} className="text-[#651357]">
                         Open project
                       </Button>
                       <Button
@@ -1639,14 +1773,14 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                 autoFocus
                 value={newProjectName}
                 onChange={(event) => setNewProjectName(event.target.value)}
-                className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 font-normal outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+                className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 font-normal outline-none focus:border-[#a53c91] focus:ring-2 focus:ring-[#f5e8f2]"
               />
             </label>
             <div className="mt-5 flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setNewProjectDialogOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={!newProjectName.trim()} className="bg-cyan-600 text-white hover:bg-cyan-700">
+              <Button type="submit" disabled={!newProjectName.trim()} className="bg-[#F39100] text-white hover:bg-[#df8500]">
                 Create project
               </Button>
             </div>
@@ -1684,7 +1818,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
   }
 
   return (
-    <main className="min-h-screen bg-[#f4f7fa] text-slate-950">
+    <main className="min-h-screen bg-[#f5f6f7] text-slate-950">
       <input
         ref={reloadSourceInput}
         className="hidden"
@@ -1705,7 +1839,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
           event.target.value = "";
         }}
       />
-      <header className="border-b border-slate-200 bg-[#0c2538] text-white">
+      <header className="border-b border-slate-700 bg-[#951C81] text-white">
         <div className="mx-auto flex max-w-[1450px] items-center justify-between px-5 py-4 lg:px-8">
           <div className="flex items-center gap-3">
             <Button
@@ -1717,7 +1851,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
             >
               <ArrowLeft size={19} />
             </Button>
-            <div className="grid h-9 w-9 place-items-center rounded-lg bg-[#e6f8fb] text-[#087d98]"><Database size={20} strokeWidth={2} /></div>
+            <div className="grid h-9 w-9 place-items-center rounded-lg bg-[#f5e8f2] text-[#651357]"><Database size={20} strokeWidth={2} /></div>
             <div>
               <p className="text-[15px] font-bold">
                 Database Mapper
@@ -1870,7 +2004,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                     <Button
                       disabled={!canRunMatching}
                       onClick={runMatching}
-                      className="bg-cyan-600 text-white hover:bg-cyan-700 disabled:bg-slate-200"
+                      className="bg-[#F39100] text-white hover:bg-[#df8500] disabled:bg-slate-200"
                     >
                       <Search size={17} />
                       {duplicateWarning
@@ -1924,7 +2058,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                   <select
                     value={confidenceFilter}
                     onChange={(event) => setConfidenceFilter(event.target.value)}
-                    className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-500"
+                    className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#a53c91]"
                     aria-label="Confidence comparison"
                   >
                     <option value="all">All confidence levels</option>
@@ -1943,7 +2077,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                             setConfidenceMaximum(nextMinimum);
                           }
                         }}
-                        className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-500"
+                        className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#a53c91]"
                         aria-label={confidenceFilter === "higher" ? "Minimum confidence" : confidenceFilter === "lower" ? "Maximum confidence" : "Lower confidence"}
                       >
                         {Array.from({ length: 21 }, (_, index) => index * 5).map((percentage) => (
@@ -1962,7 +2096,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                                 setConfidenceMinimum(nextMaximum);
                               }
                             }}
-                            className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-500"
+                            className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#a53c91]"
                             aria-label="Upper confidence"
                           >
                             {Array.from({ length: 21 }, (_, index) => index * 5).map((percentage) => (
@@ -1973,6 +2107,17 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                       )}
                     </>
                   )}
+                  <select
+                    value={decisionFilter}
+                    onChange={(event) => setDecisionFilter(event.target.value)}
+                    className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#a53c91]"
+                    aria-label="Review status"
+                  >
+                    <option value="all">All decisions</option>
+                    <option value="approved">Accepted</option>
+                    <option value="skipped">Rejected</option>
+                    <option value="pending">Not decided yet</option>
+                  </select>
                   <label className="relative min-w-[240px] flex-1">
                     <Search
                       className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
@@ -1982,7 +2127,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                       value={query}
                       onChange={(event) => setQuery(event.target.value)}
                       placeholder="Search results"
-                      className="h-9 w-full rounded-md border border-slate-300 pl-9 pr-3 text-sm outline-none focus:border-cyan-500"
+                      className="h-9 w-full rounded-md border border-slate-300 pl-9 pr-3 text-sm outline-none focus:border-[#a53c91]"
                     />
                   </label>
                 </div>
@@ -2002,7 +2147,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                             : current.filter((id) => !filtered.some((match) => match.id === id)),
                         )
                       }
-                      className="h-4 w-4 accent-cyan-600"
+                      className="h-4 w-4 accent-[#951C81]"
                     />
                     Select all {filtered.length} filtered
                   </label>
@@ -2025,7 +2170,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                         selectedReviewIds.forEach((id) => recordDecision(id, "approved"));
                         setSelectedReviewIds([]);
                       }}
-                      className="bg-cyan-600 text-white hover:bg-cyan-700"
+                      className="bg-[#F39100] text-white hover:bg-[#df8500]"
                     >
                       <Check size={15} /> Approve selected
                     </Button>
@@ -2053,7 +2198,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                                 : current.filter((id) => id !== match.id),
                             )
                           }
-                          className="h-4 w-4 accent-cyan-600"
+                          className="h-4 w-4 accent-[#951C81]"
                         />
                         <div>
                           <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
@@ -2071,7 +2216,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                                   [match.id]: !detailsOpen,
                                 }))
                               }
-                              className="mt-1 inline-flex items-center gap-1 text-sm font-medium text-cyan-700 hover:text-cyan-900"
+                              className="mt-1 inline-flex items-center gap-1 text-sm font-medium text-[#651357] hover:text-[#501045]"
                             >
                               Details
                               <ChevronDown
@@ -2124,7 +2269,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                                 onClick={() =>
                                   recordDecision(match.id, "approved")
                                 }
-                                className="bg-cyan-600 text-white hover:bg-cyan-700"
+                                className="bg-[#F39100] text-white hover:bg-[#df8500]"
                               >
                                 <Check size={16} /> Approve
                               </Button>
@@ -2202,7 +2347,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                           setShowResolution(true);
                           setOpenStep(4);
                         }}
-                        className="bg-cyan-600 text-white hover:bg-cyan-700"
+                        className="bg-[#F39100] text-white hover:bg-[#df8500]"
                       >
                         Resolve {unresolvedMatches.length} unmatched{" "}
                         {unresolvedMatches.length === 1 ? "record" : "records"}
@@ -2257,14 +2402,14 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                                 : current.filter((id) => !filteredUnresolved.some((match) => match.id === id)),
                             )
                           }
-                          className="h-4 w-4 accent-cyan-600"
+                          className="h-4 w-4 accent-[#951C81]"
                         />
                         Select all {filteredUnresolved.length} filtered
                       </label>
                       <select
                         value={resolutionConfidenceFilter}
                         onChange={(event) => setResolutionConfidenceFilter(event.target.value)}
-                        className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-cyan-500"
+                        className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#a53c91]"
                         aria-label="Filter unresolved records by confidence"
                       >
                         <option value="all">All confidence levels</option>
@@ -2293,7 +2438,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                           unresolvedMatches.filter((match) => selectedResolutionIds.includes(match.id)).forEach(approveResolution);
                           setSelectedResolutionIds([]);
                         }}
-                        className="bg-cyan-600 text-white hover:bg-cyan-700"
+                        className="bg-[#F39100] text-white hover:bg-[#df8500]"
                       >
                         <Check size={15} /> Approve selected
                       </Button>
@@ -2392,7 +2537,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                                         : current.filter((id) => id !== match.id),
                                     )
                                   }
-                                  className="h-4 w-4 shrink-0 accent-cyan-600"
+                                  className="h-4 w-4 shrink-0 accent-[#951C81]"
                                 />
                                 <p className="font-bold">
                                   {match.source_name || "Blank value"}
@@ -2409,7 +2554,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                                     [match.id]: event.target.value,
                                   }))
                                 }
-                                className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm font-normal outline-none focus:border-cyan-500"
+                                className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm font-normal outline-none focus:border-[#a53c91]"
                               >
                                 {alternatives.map((candidate) => (
                                   <option
@@ -2435,7 +2580,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                             <Button
                               disabled={!selectedCandidate}
                               onClick={() => approveResolution(match)}
-                              className="bg-cyan-600 text-white hover:bg-cyan-700 disabled:bg-slate-200"
+                              className="bg-[#F39100] text-white hover:bg-[#df8500] disabled:bg-slate-200"
                             >
                               <Check size={16} />{" "}
                               {noMatchSelected
@@ -2448,7 +2593,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                           </div>
 
                           {manualSearchSelected && (
-                            <div className="mt-4 rounded-lg border border-cyan-200 bg-cyan-50/40 p-4">
+                            <div className="mt-4 rounded-lg border border-[#e6bfde] bg-[#fbf2f9]/40 p-4">
                               <div className="flex flex-wrap items-start justify-between gap-3">
                                 <div>
                                   <p className="text-sm font-semibold text-slate-700">
@@ -2521,7 +2666,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                                           }
                                         }}
                                         placeholder={`Filter ${pair.target}`}
-                                        className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm shadow-sm outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+                                        className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm shadow-sm outline-none focus:border-[#a53c91] focus:ring-2 focus:ring-[#f5e8f2]"
                                       />
                                     </label>
                                   ))}
@@ -2553,7 +2698,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                                           <tr
                                             key={candidate.target_index}
                                             onClick={() => updateManualSearch(match.id, { selectedIndex: candidate.target_index })}
-                                            className={`cursor-pointer hover:bg-cyan-50 ${String(manualSearch.selectedIndex) === String(candidate.target_index) ? "bg-cyan-50" : ""}`}
+                                            className={`cursor-pointer hover:bg-[#fbf2f9] ${String(manualSearch.selectedIndex) === String(candidate.target_index) ? "bg-[#fbf2f9]" : ""}`}
                                           >
                                             <td className="px-3 py-3">
                                               <input
@@ -2561,7 +2706,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                                                 name={`manual-result-${match.id}`}
                                                 checked={String(manualSearch.selectedIndex) === String(candidate.target_index)}
                                                 onChange={() => updateManualSearch(match.id, { selectedIndex: candidate.target_index })}
-                                                className="h-4 w-4 accent-cyan-600"
+                                                className="h-4 w-4 accent-[#951C81]"
                                               />
                                             </td>
                                             {result.column_pairs.map((pair, index) => (
@@ -2754,7 +2899,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                                   <select
                                     value={selectedIndex}
                                     onChange={(event) => setDuplicateCandidateSelections((current) => ({ ...current, [match.id]: event.target.value }))}
-                                    className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm font-normal outline-none focus:border-cyan-500"
+                                    className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm font-normal outline-none focus:border-[#a53c91]"
                                   >
                                     <option value={currentCandidate.target_index}>
                                       Current: {currentCandidate.target_name} — {currentCandidate.score}%
@@ -2778,7 +2923,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                                   <Button
                                     disabled={!selectedCandidate || currentMatchSelected}
                                     onClick={() => stageDuplicateResolution(group, match, candidateOptions, selectedIndex)}
-                                    className="bg-cyan-600 text-white hover:bg-cyan-700 disabled:bg-slate-200"
+                                    className="bg-[#F39100] text-white hover:bg-[#df8500] disabled:bg-slate-200"
                                   >
                                     <Check size={16} /> {noMatchSelected ? "Confirm no match" : manualSearchSelected ? "Approve manual match" : "Change match"}
                                   </Button>
@@ -2786,7 +2931,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                               </div>
 
                               {manualSearchSelected && (
-                                <div className="mt-4 rounded-lg border border-cyan-200 bg-cyan-50/40 p-4">
+                                <div className="mt-4 rounded-lg border border-[#e6bfde] bg-[#fbf2f9]/40 p-4">
                                   <div className="flex flex-wrap items-start justify-between gap-3">
                                     <div>
                                       <p className="text-sm font-semibold text-slate-700">Search the complete {fileStem(targetDisplay)} list</p>
@@ -2824,7 +2969,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                                             onChange={(event) => updateManualSearch(match.id, { filters: { ...(manualSearch.filters || {}), [pair.target]: event.target.value } })}
                                             onKeyDown={(event) => { if (event.key === "Enter" && !manualSearch.loading) searchAllCandidates(match.id); }}
                                             placeholder={`Filter ${pair.target}`}
-                                            className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm shadow-sm outline-none focus:border-cyan-500"
+                                            className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm shadow-sm outline-none focus:border-[#a53c91]"
                                           />
                                         </label>
                                       ))}
@@ -2840,8 +2985,8 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                                         </thead>
                                         <tbody className="divide-y divide-slate-100">
                                           {manualSearch.results.map((candidate) => (
-                                            <tr key={candidate.target_index} onClick={() => updateManualSearch(match.id, { selectedIndex: candidate.target_index })} className="cursor-pointer hover:bg-cyan-50">
-                                              <td className="px-3 py-3"><input type="radio" name={`duplicate-manual-${match.id}`} checked={String(manualSearch.selectedIndex) === String(candidate.target_index)} onChange={() => updateManualSearch(match.id, { selectedIndex: candidate.target_index })} className="h-4 w-4 accent-cyan-600" /></td>
+                                            <tr key={candidate.target_index} onClick={() => updateManualSearch(match.id, { selectedIndex: candidate.target_index })} className="cursor-pointer hover:bg-[#fbf2f9]">
+                                              <td className="px-3 py-3"><input type="radio" name={`duplicate-manual-${match.id}`} checked={String(manualSearch.selectedIndex) === String(candidate.target_index)} onChange={() => updateManualSearch(match.id, { selectedIndex: candidate.target_index })} className="h-4 w-4 accent-[#951C81]" /></td>
                                               {result.column_pairs.map((pair, index) => <td key={pair.target} className="px-3 py-3 text-slate-700">{candidate.target_values[index] || "—"}</td>)}
                                             </tr>
                                           ))}
@@ -2903,7 +3048,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
             </div>
             <Button
               onClick={openExportDialog}
-              className="shrink-0 bg-[#0c2538] text-white hover:bg-[#163d58]"
+              className="shrink-0 bg-[#F39100] text-white hover:bg-[#df8500]"
             >
               <Download size={15} /> Export results
             </Button>
@@ -3070,7 +3215,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                 Cancel
               </Button>
               {!hasExactDuplicateRows && (
-                <Button disabled={duplicateReportLoading} onClick={startMatching} className="bg-cyan-600 text-white hover:bg-cyan-700">
+                <Button disabled={duplicateReportLoading} onClick={startMatching} className="bg-[#F39100] text-white hover:bg-[#df8500]">
                   Continue matching
                 </Button>
               )}
@@ -3123,7 +3268,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                 <label
                   className={`cursor-pointer rounded-lg border p-3 transition ${
                     exportFormat === "xlsx"
-                      ? "border-cyan-600 bg-cyan-50 ring-1 ring-cyan-600"
+                      ? "border-[#951C81] bg-[#fbf2f9] ring-1 ring-[#951C81]"
                       : "border-slate-200 bg-white hover:border-slate-300"
                   }`}
                 >
@@ -3142,7 +3287,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                 <label
                   className={`cursor-pointer rounded-lg border p-3 transition ${
                     exportFormat === "csv"
-                      ? "border-cyan-600 bg-cyan-50 ring-1 ring-cyan-600"
+                      ? "border-[#951C81] bg-[#fbf2f9] ring-1 ring-[#951C81]"
                       : "border-slate-200 bg-white hover:border-slate-300"
                   }`}
                 >
@@ -3170,9 +3315,47 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !exporting) saveExport();
                 }}
-                className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm font-normal outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+                className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm font-normal outline-none focus:border-[#a53c91] focus:ring-2 focus:ring-[#f5e8f2]"
               />
             </label>
+
+            <label className="mt-3 flex w-fit cursor-pointer items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={includeAdditionalFields}
+                onChange={(event) => {
+                  const checked = event.target.checked;
+                  setIncludeAdditionalFields(checked);
+                  if (!checked) {
+                    setSourceAdditionalExportColumns([]);
+                    setTargetAdditionalExportColumns([]);
+                  }
+                }}
+                className="h-4 w-4 accent-[#951C81]"
+              />
+              <span>Include additional fields from the input files</span>
+            </label>
+
+            {includeAdditionalFields && (
+              <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-4">
+                <p className="text-sm font-semibold text-slate-700">Additional export fields</p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Select all fields or choose any individual combination. These columns were not used for matching.
+                </p>
+                <ExportFieldSelector
+                  label={sourceDisplay?.name || "File A"}
+                  columns={sourceExportColumns}
+                  value={sourceAdditionalExportColumns}
+                  onChange={setSourceAdditionalExportColumns}
+                />
+                <ExportFieldSelector
+                  label={targetDisplay?.name || "File B"}
+                  columns={targetExportColumns}
+                  value={targetAdditionalExportColumns}
+                  onChange={setTargetAdditionalExportColumns}
+                />
+              </div>
+            )}
 
             <label className="mt-3 flex w-fit cursor-pointer items-center gap-2 text-sm text-slate-700">
               <input
@@ -3181,7 +3364,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                 onChange={(event) =>
                   setChooseExportLocation(event.target.checked)
                 }
-                className="h-4 w-4 accent-cyan-600"
+                className="h-4 w-4 accent-[#951C81]"
               />
               <span>Choose a different save location</span>
             </label>
@@ -3194,7 +3377,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
                   onChange={(event) =>
                     setIncludeUnmappedTarget(event.target.checked)
                   }
-                  className="h-4 w-4 accent-cyan-600"
+                  className="h-4 w-4 accent-[#951C81]"
                 />
                 <span>
                   Include {unmappedTargetCount.toLocaleString()} unused {targetDisplay?.name || "File B"} rows
@@ -3223,7 +3406,7 @@ export default function DatabaseMapper({ onBack, onAccount, account }) {
               <Button
                 disabled={exporting || !exportFileName.trim()}
                 onClick={saveExport}
-                className="bg-[#0c2538] text-white hover:bg-[#163d58] disabled:bg-slate-300"
+                className="bg-[#F39100] text-white hover:bg-[#df8500] disabled:bg-slate-300"
               >
                 {exporting ? (
                   <LoaderCircle className="animate-spin" size={16} />

@@ -4,13 +4,18 @@ from babel import Locale
 import pycountry
 from pathlib import Path
 
+from .utilities import build_country_aliases as _shared_country_aliases
+
 class LocaleNormaliser:
     VALID_SHORT = {"USA", "UK", "UAE"}
 
-    def __init__(self,country):
-        self.country_names = self._load_country_names()
+    def __init__(self,country,rare):
         self.country = country
+        self.rare = rare
+
+        self.country_names = self._load_country_names()
         self.translated_country_name = self._translate_country_local()
+        self.country_aliases = self.build_country_aliases()
 
     def _load_country_names(self, path=None):
         path = Path(path) if path is not None else Path(__file__).resolve().parent / "country_names.json"
@@ -48,15 +53,14 @@ class LocaleNormaliser:
         except:
             return None
 
-
-    def is_country(self, name):
+    def _is_country(self, name):
         if not isinstance(name, str):
             return False
 
         name = name.strip().lower()
         return name in self.country_names
 
-    def clean_city(self,city):
+    def _clean_city(self,city):
         if not isinstance(city, str):
             return ""
 
@@ -90,6 +94,21 @@ class LocaleNormaliser:
             "Thuringia", "Thüringen"
         ]
         return str in bundeslaender
+
+    def build_country_aliases(self):
+        if self.country.lower() in {"usa", "uk", "uae"}:
+            self.country = self.country.upper()
+        aliases, _ = _shared_country_aliases(self.country, self)
+        return aliases
+
+    def country_is_target(self,series):
+        return (
+            series.fillna("")
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .isin(self.country_aliases)
+        )
 
     def extract_countries_cities(self, affiliations_str, not_target_country=False):
         EXCLUDE_WORDS = [
@@ -169,8 +188,9 @@ class LocaleNormaliser:
                 country = "UK"
 
             if not_target_country:
-                if self.is_country(country):
-                    city = self.clean_city(parts[-2])
+                if self._is_country(country):
+
+                    city = self._clean_city(parts[-2])
                     if country in ["china", "people's republic of china", "p r china", "pr china"]:
                         country = "china"
 
@@ -201,7 +221,7 @@ class LocaleNormaliser:
                 translated_country = (self.translated_country_name or "").lower()
 
                 if original_country in aff or (translated_country and translated_country in aff):
-                    city = self.clean_city(parts[-2])
+                    city = self._clean_city(parts[-2])
                     if city and len(city) > 2 and not any(word in city for word in EXCLUDE_WORDS):
                         if city in CITY_TRANSLATIONS.keys():
                             city = CITY_TRANSLATIONS[city]

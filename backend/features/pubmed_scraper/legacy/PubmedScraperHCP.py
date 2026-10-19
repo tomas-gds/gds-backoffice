@@ -1,16 +1,13 @@
 import os
 import pandas as pd
-import re
-import unicodedata
 import time
 
 from .PubmedScraper import PubmedScraper
 from .PubmedScraperAuthors import PubmedScraperAuthors
-from .LocaleNormaliser import LocaleNormaliser
-from .NameNormaliser import NameNormaliser
 from .HCONormaliser import HCONormaliser
+from .utilities import *
 class PubmedScraperHCP:
-    def __init__(self, search, country, numyears=5, rare=True):
+    def __init__(self, search, country, numyears=5, rare=False):
         self.search = search
         self.country = country.lower().title()
         self.numyears = numyears
@@ -34,10 +31,8 @@ class PubmedScraperHCP:
         self.potential_names_mapping_df = pd.DataFrame()
         self.collaborators_df = pd.DataFrame()
 
-        self.pubmed_scraper = PubmedScraper(self.search, self.country, self.numyears)
-        self.pubmed_scraper_authors = PubmedScraperAuthors(self.search, self.country, self.numyears, rare=self.rare)
-        self.locale_normaliser = LocaleNormaliser(self.country)
-        self.name_normaliser = NameNormaliser(self.rare)
+        self.pubmed_scraper = PubmedScraper(self.search, self.country, rare=self.rare, numyears=self.numyears)
+        self.pubmed_scraper_authors = PubmedScraperAuthors(self.search, self.country, numyears=self.numyears, rare=self.rare)
         self.hco_normaliser = HCONormaliser(self.df, self.country)
 
     def _ask_for_name_column(self, df):
@@ -56,296 +51,15 @@ class PubmedScraperHCP:
 
             print("Invalid choice. Please try again.")
 
-    def _normalize_text(self, text):
-        text = unicodedata.normalize("NFKD", text)
-        text = "".join(c for c in text if not unicodedata.combining(c))
-        # text = text.replace("-", " ")
-        return text.strip()
-
-
-    def _smart_title(self, text):
-        """
-        Title-case names while preserving surname particles,
-        hyphens, and apostrophes.
-        """
-        lower_particles = {
-            "da", "de", "del", "della", "der", "di", "la", "le",
-            "van", "von", "den", "ten", "ter", "du"
-        }
-
-        words = text.split()
-        result = []
-
-        for word in words:
-            if word.lower() in lower_particles:
-                result.append(word.lower())
-                continue
-
-            # Split while retaining hyphens and apostrophes.
-            parts = re.split(r"([-'])", word)
-
-            formatted = "".join(
-                part if part in {"-", "'"} else part.capitalize()
-                for part in parts
-            )
-
-            result.append(formatted)
-
-        return " ".join(result)
-
-    def _parse_name(self, name):
-        """
-        Supports:
-        - 'John Adam Smith'
-        - 'Smith, John Adam'
-        - 'J Smith'
-        - 'Smith J'
-        - 'M van den Berg'
-        """
-
-        surname_particles = {
-            "da", "de", "del", "della", "der", "di", "la", "le",
-            "van", "von", "den", "ten", "ter", "du", "st", "st."
-        }
-
-        # Case 1: Last, First Middle
-        if "," in name:
-            parts = [p.strip() for p in name.split(",", 1)]
-            last_name = self._smart_title(parts[0])
-            given_names = parts[1].split() if len(parts) > 1 else []
-            initials = "".join(token[0].upper() for token in given_names if token and token[0].isalpha())
-            return last_name, initials
-
-        tokens = name.split()
-
-        if len(tokens) == 1:
-            return self._smart_title(tokens[0]), ""
-
-        # Detect surname at end, including particles like "van den Berg"
-        surname_start = len(tokens) - 1
-        i = len(tokens) - 2
-
-        while i >= 0 and tokens[i].lower() in surname_particles:
-            surname_start = i
-            i -= 1
-
-        last_name_tokens = tokens[surname_start:]
-        given_tokens = tokens[:surname_start]
-
-        # Heuristic:
-        # if first token looks like surname and second token is initial-only, e.g. "Smith J"
-        # then interpret as surname first
-        if len(tokens) == 2 and len(tokens[1].replace(".", "")) == 1:
-            last_name_tokens = [tokens[0]]
-            given_tokens = [tokens[1]]
-
-        last_name = self._smart_title(" ".join(last_name_tokens))
-        initials = "".join(
-            token[0].upper()
-            for token in given_tokens
-            if token and token[0].isalpha()
-        )
-
-        return last_name, initials
-
-    def _build_author_key_from_name(self, name):
-        """
-        Convert a person name into a PubMed-style author key.
-        Examples:
-            'John A. Smith' -> 'Smith JA'
-            'Smith, John A.' -> 'Smith JA'
-            'M. van den Berg' -> 'Van Den Berg M'
-        """
-
-        if pd.isna(name):
-            return None
-
-        name = str(name).strip()
-        if not name:
-            return None
-
-        name = self._normalize_text(name)
-
-        # remove common titles/suffixes
-        name = re.sub(
-            r"\b(dr|prof|mr|mrs|ms|md|phd|professor)\b\.?",
-            "",
-            name,
-            flags=re.IGNORECASE,
-        ).strip()
-
-        # collapse whitespace
-        name = re.sub(r"\s+", " ", name)
-
-        if not name:
-            return None
-
-        last_name, initials = self._parse_name(name)
-
-        if not last_name:
-            return None
-
-        if initials:
-            return f"{last_name} {initials}".strip()
-
-        return last_name
-
-    def _normalize_name_for_match(self, name):
-        if pd.isna(name):
-            return ""
-        name = str(name).strip()
-        name = unicodedata.normalize("NFKD", name)
-        name = "".join(c for c in name if not unicodedata.combining(c))
-        name = re.sub(r"\s+", " ", name).strip().lower()
-        return name
-
-    def _strip_titles_suffixes(self, name):
-        if not name:
-            return ""
-
-        name = re.sub(
-            r"\b(dr|prof|mr|mrs|ms|md|phd|professor)\b\.?",
-            "",
-            name,
-            flags=re.IGNORECASE,
-        )
-        name = re.sub(
-            r"\b(jr|sr|ii|iii|iv)\b\.?",
-            "",
-            name,
-            flags=re.IGNORECASE,
-        )
-        name = re.sub(r"\s+", " ", name).strip()
-        return name
-
-    def _normalize_for_person_match(self, text):
-        if pd.isna(text):
-            return ""
-
-        text = str(text).strip()
-        if not text:
-            return ""
-
-        text = unicodedata.normalize("NFKD", text)
-        text = "".join(c for c in text if not unicodedata.combining(c))
-        text = text.lower()
-        text = text.replace("-", " ")
-        text = re.sub(r"\s+", " ", text).strip()
-        return text
-
-    def _parse_full_name_strict(self, name):
-        """
-        Returns:
-            (last_name, first_name, middle_initials)
-
-        Examples:
-            'Anne-Marie Sophie Kirsten' -> ('kirsten', 'anne marie', 's')
-            'Anne Kirsten'              -> ('kirsten', 'anne', '')
-            'Sven P Aries'              -> ('aries', 'sven', 'p')
-            'Aries, Sven P'             -> ('aries', 'sven', 'p')
-        """
-        if pd.isna(name):
-            return ("", "", "")
-
-        raw_name = str(name).strip()
-        if not raw_name:
-            return ("", "", "")
-
-        raw_name = self._strip_titles_suffixes(raw_name)
-        has_comma = "," in raw_name
-
-        surname_particles = {
-            "da", "de", "del", "della", "der", "di", "la", "le",
-            "van", "von", "den", "ten", "ter", "du", "st", "st."
-        }
-
-        if has_comma:
-            parts = [p.strip() for p in raw_name.split(",", 1)]
-            last_name = self._normalize_for_person_match(parts[0])
-
-            given_part = parts[1] if len(parts) > 1 else ""
-            given_part = self._normalize_for_person_match(given_part)
-            given_tokens = given_part.split() if given_part else []
-
-            if not given_tokens:
-                return (last_name, "", "")
-
-            first_name = given_tokens[0]
-            middle_initials = "".join(
-                t[0] for t in given_tokens[1:] if t and t[0].isalpha()
-            )
-            return (last_name, first_name, middle_initials)
-
-        name_norm = self._normalize_for_person_match(raw_name)
-        tokens = name_norm.split()
-
-        if not tokens:
-            return ("", "", "")
-
-        if len(tokens) == 1:
-            return (tokens[0], "", "")
-
-        if len(tokens) == 2 and len(tokens[1].replace(".", "")) == 1:
-            last_name = tokens[0]
-            first_name = tokens[1].replace(".", "")
-            return (last_name, first_name, "")
-
-        surname_start = len(tokens) - 1
-        i = len(tokens) - 2
-
-        while i >= 0 and tokens[i] in surname_particles:
-            surname_start = i
-            i -= 1
-
-        last_name_tokens = tokens[surname_start:]
-        given_tokens = tokens[:surname_start]
-        last_name = " ".join(last_name_tokens)
-
-        if not given_tokens:
-            return (last_name, "", "")
-
-        # Handle hyphenated/compound first names:
-        # if there are 2+ non-initial tokens at the start, keep them together as first name
-        first_name_tokens = []
-        middle_tokens = []
-
-        for idx, tok in enumerate(given_tokens):
-            clean_tok = tok.replace(".", "")
-            if idx == 0:
-                first_name_tokens.append(tok)
-            elif len(clean_tok) > 1 and len(first_name_tokens) == 1:
-                # second full token likely part of compound first name, e.g. anne marie
-                first_name_tokens.append(tok)
-            else:
-                middle_tokens = given_tokens[idx:]
-                break
-
-        first_name = " ".join(first_name_tokens)
-        middle_initials = "".join(
-            t[0] for t in middle_tokens if t and t[0].isalpha()
-        )
-
-        return (last_name, first_name, middle_initials)
-
-    def load_file_and_build_author_keys(self):
-        """
-        Load a CSV or Excel file, ask which column contains clinician names,
-        remove duplicate authors from the input file, and build PubMed-ready author keys.
-
-        Returns:
-            df (pd.DataFrame): deduplicated dataframe with extra columns
-            selected_column (str): column chosen by user
-            author_keys (list[str]): unique PubMed-ready author keys
-        """
-
+    def _load_file_and_build_author_keys(self):
         file_path = input("Enter the path to your file: ").strip().strip('"').strip("'")
-        # file_path = r"C:\Users\TomásCarrilho\OneDrive - Global Data Support B.V\GDS-Clients - Documents\1.0 Global\GSK\Gordelroos_GSK workfile.xlsx"
         ext = os.path.splitext(file_path)[1].lower()
 
         # --- Handle Excel with multiple sheets ---
         if ext in [".xlsx", ".xls"]:
             excel_file = pd.ExcelFile(file_path)
             sheet_names = excel_file.sheet_names
+            excel_file.close()
 
             if len(sheet_names) == 1:
                 print(f"\nOnly one worksheet found: {sheet_names[0]}")
@@ -400,7 +114,7 @@ class PubmedScraperHCP:
         # --- Build helper columns ---
         self.input_df = self.input_df.copy()
         self.input_df["Original Name"] = self.input_df[selected_column]
-        self.input_df["PubMed Author Key"] = self.input_df[selected_column].apply(self._build_author_key_from_name)
+        self.input_df["PubMed Author Key"] = self.input_df[selected_column].apply(build_author_key_from_name)
 
         # Clean values
         self.input_df["Original Name"] = self.input_df["Original Name"].astype(str).str.strip()
@@ -431,95 +145,24 @@ class PubmedScraperHCP:
         self.client_author_keys = set(self.author_keys)
         self.client_author_names = set(author_names.unique().tolist())
 
-        # Keep if you still use it elsewhere
-        self.client_author_names_norm = {self._normalize_name_for_match(x)for x in self.client_author_names if str(x).strip()}
-
         self.client_author_signature_to_name = {}
 
         for client_name in self.client_author_names:
             if pd.isna(client_name) or not str(client_name).strip():
                 continue
 
-            sig = self._parse_full_name_strict(client_name)
+            sig = parse_name(client_name, strict=True)
             if sig != ("", "", ""):
                 self.client_author_signature_to_name[sig] = client_name
 
         return self.input_df, selected_column, self.author_keys
-
-    def _split_first_name_tokens(self, first_name):
-        if pd.isna(first_name):
-            return []
-
-        first_name = str(first_name).strip().lower()
-        if not first_name:
-            return []
-
-        first_name = unicodedata.normalize("NFKD", first_name)
-        first_name = "".join(c for c in first_name if not unicodedata.combining(c))
-        first_name = first_name.replace("-", " ")
-        first_name = re.sub(r"\s+", " ", first_name).strip()
-
-        return [t for t in first_name.split() if t]
-
-    def _token_is_initial(self, tok):
-        tok = str(tok).strip().replace(".", "")
-        return len(tok) == 1 and tok.isalpha()
-
-    def _first_names_compatible(self, a, b):
-        """
-        Accepts:
-            anne vs anne -> True
-            anne vs anne marie -> True
-            anne marie vs anne -> True
-            t vs tomas -> True
-            tomas vs t -> True
-            t a vs tomas antonio -> handled through first + middle logic elsewhere
-            sven vs steven -> False
-        """
-        a_tokens = self._split_first_name_tokens(a)
-        b_tokens = self._split_first_name_tokens(b)
-
-        if not a_tokens or not b_tokens:
-            return False
-
-        # exact token match
-        if a_tokens == b_tokens:
-            return True
-
-        # prefix compatibility for compound first names
-        min_len = min(len(a_tokens), len(b_tokens))
-        if a_tokens[:min_len] == b_tokens[:min_len]:
-            return True
-
-        # single-token initial vs full first name
-        if len(a_tokens) == 1 and len(b_tokens) == 1:
-            a0 = a_tokens[0].replace(".", "")
-            b0 = b_tokens[0].replace(".", "")
-
-            if a0 == b0:
-                return True
-
-            if self._token_is_initial(a0) and b0 and a0 == b0[0]:
-                return True
-
-            if self._token_is_initial(b0) and a0 and b0 == a0[0]:
-                return True
-
-        return False
-
-
-    def _normalize_initials(self, text):
-        if pd.isna(text) or not text:
-            return ""
-        text = str(text).upper().replace(".", "").strip()
-        return "".join(ch for ch in text if ch.isalpha())
 
     def _get_client_file_name_match(self, pubmed_name):
         """
         Return the matching client-file name for a PubMed author.
         If no match is found, return "".
         """
-        pub_last, pub_first, pub_middle = self._parse_full_name_strict(pubmed_name)
+        pub_last, pub_first, pub_middle = parse_name(pubmed_name, strict=True)
 
         if not pub_last:
             return ""
@@ -530,7 +173,7 @@ class PubmedScraperHCP:
             if cli_last != pub_last:
                 continue
 
-            if not self._first_names_compatible(pub_first, cli_first):
+            if not first_names_compatible(pub_first, cli_first):
                 continue
 
             score = 0
@@ -541,8 +184,8 @@ class PubmedScraperHCP:
             else:
                 score += 2
 
-            cli_middle_n = self._normalize_initials(cli_middle)
-            pub_middle_n = self._normalize_initials(pub_middle)
+            cli_middle_n = normalize_initials(cli_middle)
+            pub_middle_n = normalize_initials(pub_middle)
 
             if cli_middle_n and pub_middle_n:
                 if cli_middle_n == pub_middle_n:
@@ -561,6 +204,7 @@ class PubmedScraperHCP:
         candidates.sort(key=lambda x: (-x[0], x[1]))
         return candidates[0][1]
 
+
     def _add_client_file_name_columns(self):
         """
         Add 'Client File Name' column to all relevant DataFrames.
@@ -568,24 +212,18 @@ class PubmedScraperHCP:
 
         # --- Main DF ---
         if not self.df.empty and "Author" in self.df.columns:
-            self.df["Client File Name"] = self.df["Author"].apply(
-                self._get_client_file_name_match
-            )
+            self.df["Client File Name"] = self.df["Author"].apply(self._get_client_file_name_match)
 
         # --- Collaborators DF ---
         if not self.collaborators_df.empty and "Name" in self.collaborators_df.columns:
-            self.collaborators_df["Client File Name"] = self.collaborators_df["Name"].apply(
-                self._get_client_file_name_match
-            )
+            self.collaborators_df["Client File Name"] = self.collaborators_df["Name"].apply(self._get_client_file_name_match)
 
         # --- Author Names Mapping DF ---
         if not self.author_names_mapping_df.empty:
             col0 = self.author_names_mapping_df.columns[0]
             col1 = self.author_names_mapping_df.columns[1]
 
-            self.author_names_mapping_df["Client File Name"] = (
-                self.author_names_mapping_df[col1].apply(self._get_client_file_name_match)
-            )
+            self.author_names_mapping_df["Client File Name"] = self.author_names_mapping_df[col1].apply(self._get_client_file_name_match)
 
         # --- Potential Names Mapping DF ---
         if not self.potential_names_mapping_df.empty:
@@ -593,13 +231,10 @@ class PubmedScraperHCP:
             col1 = self.potential_names_mapping_df.columns[1]
 
             # You can choose which side to map — better to map BOTH for visibility
-            self.potential_names_mapping_df["Client File Name 1"] = (
-                self.potential_names_mapping_df[col0].apply(self._get_client_file_name_match)
-            )
+            self.potential_names_mapping_df["Client File Name 1"] = self.potential_names_mapping_df[col0].apply(self._get_client_file_name_match)
 
-            self.potential_names_mapping_df["Client File Name 2"] = (
-                self.potential_names_mapping_df[col1].apply(self._get_client_file_name_match)
-            )
+            self.potential_names_mapping_df["Client File Name 2"] = self.potential_names_mapping_df[col1].apply(self._get_client_file_name_match)
+
 
     def get_pubmeds_HCP(self, query, allowed_author_keys=None):
         temp_df = self.pubmed_scraper_authors.get_pubmeds_Author(query,allowed_author_keys=allowed_author_keys).copy()
@@ -612,7 +247,6 @@ class PubmedScraperHCP:
         return temp_df
 
     def extract(self):
-        self.pubmed_scraper_authors._build_country_aliases()
         client_author_keys = sorted(self.client_author_keys)
 
 
@@ -623,10 +257,10 @@ class PubmedScraperHCP:
         # Search by client-file clinician keys.
         # Keep all authors from matched papers.
         print("     Running first query...")
-        for author_batch in self.pubmed_scraper_authors._chunked(client_author_keys, 30):
+        for author_batch in chunked(client_author_keys, 30):
 
-            authors_clause = self.pubmed_scraper_authors._author_query_builder(author_batch)
-            query = f'(({self.search})[Title/Abstract]) AND {authors_clause}'
+            authors_clause = self.pubmed_scraper_authors.author_query_builder(author_batch)
+            query = f'({self.search}) AND {authors_clause}'
 
             batch_df = self.get_pubmeds_HCP(query,allowed_author_keys=None)
 
@@ -659,9 +293,9 @@ class PubmedScraperHCP:
             new_author_keys = sorted(coauthor_keys)
             print("     Running second query...")
 
-            for author_batch in self.pubmed_scraper_authors._chunked(new_author_keys, 30):
-                authors_clause = self.pubmed_scraper_authors._author_query_builder(author_batch)
-                query = f'(({self.search})[Title/Abstract]) AND {authors_clause}'
+            for author_batch in chunked(new_author_keys, 30):
+                authors_clause = self.pubmed_scraper_authors.author_query_builder(author_batch)
+                query = f'({self.search}) AND {authors_clause}'
 
                 batch_df = self.get_pubmeds_HCP(
                     query,
@@ -693,33 +327,33 @@ class PubmedScraperHCP:
             )
 
     def main(self):
-        self.load_file_and_build_author_keys()
+        self._load_file_and_build_author_keys()
 
-        print("🔍 Starting Pubmed extraction...")
+        print("Starting Pubmed extraction...")
         self.extract()
 
         if self.df.empty:
-            print("❗ NO PUBMEDS WERE FOUND ❗")
+            print("NO PUBMEDS WERE FOUND")
             return
 
-        print("🧹 Cleaning author names...")
+        print("Cleaning author names...")
         self.pubmed_scraper_authors.df = self.df.copy()
 
-        self.df, self.author_names_mapping_df, self.potential_names_mapping_df = (self.pubmed_scraper_authors.clean_author_names(delete=False))
+        self.df, self.author_names_mapping_df, self.potential_names_mapping_df = self.pubmed_scraper_authors.build_names_mappings()
 
-        print("🏥 Normalizing HCO and departments...")
+        print("Normalizing HCO and departments...")
         self.df = self.hco_normaliser.get_HCO_and_dept(self.df,self.first_cols,dedupe_level="author")
 
         # keep both objects aligned again
         self.pubmed_scraper_authors.df = self.df.copy()
 
-        print("👥 Extracting collaborators...")
+        print("Extracting collaborators...")
         self.pubmed_scraper_authors.df = self.df.copy()
-        self.collaborators_df = self.pubmed_scraper_authors.get_collaborators()
+        self.collaborators_df = self.pubmed_scraper_authors.get_collaborators_tab()
 
         self._add_client_file_name_columns()
 
-        print("💾 Writing Excel output...")
+        print("Writing Excel output...")
         self.pubmed_scraper.write_excel(self.df, self.author_names_mapping_df, self.potential_names_mapping_df,self.collaborators_df,scraper="hcp")
 
 

@@ -5,8 +5,8 @@ export const metadata: Metadata = {
   title: "GDS Backoffice",
   description: "A modular workspace for local data and research applications.",
   icons: {
-    icon: "/favicon.svg",
-    shortcut: "/favicon.svg",
+    icon: "/gds-icon.png",
+    shortcut: "/gds-icon.png",
   },
 };
 

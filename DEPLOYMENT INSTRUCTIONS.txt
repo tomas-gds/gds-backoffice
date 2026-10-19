@@ -1,0 +1,6 @@
+DEPLOYMENT
+
+python -m PyInstaller --clean --noconfirm database-mapper-engine.spec
+Copy-Item ".\dist\database-mapper-engine.exe" "..\src-tauri\binaries\database-mapper-engine-x86_64-pc-windows-msvc.exe" -Force
+CD ..
+pnpm.cmd tauri build

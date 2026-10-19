@@ -200,6 +200,7 @@ async def stop_pubmed_workers():
     await pubmed_jobs.shutdown()
 
 
+
 @app.post("/pubmed/export")
 async def pubmed_export(
     request: Request,
@@ -214,7 +215,7 @@ async def pubmed_export(
     sheet: str = Form(""),
     name_column: str = Form(""),
     include_full_network: bool = Form(False),
-    rare_disease: bool = Form(False),
+    rare_disease: bool = Form(True),
 ):
     search, country = search.strip(), country.strip()
     defaults = pubmed_defaults()
@@ -432,10 +433,13 @@ async def create_export(
     mapped_target_indices: str = Form("[]"),
     target_columns: str = Form("[]"),
     source_column_count: int = Form(0),
+    source: UploadFile | None = File(None),
     target: UploadFile | None = File(None),
     export_format: str = Form("xlsx"),
 ):
     unmapped_rows_appended = 0
+    source_frame = None
+    target_frame = None
     try:
         payload = json.loads(export_payload)
     except json.JSONDecodeError as exc:
@@ -454,6 +458,64 @@ async def create_export(
     if any(not isinstance(row, list) or len(row) != len(headers) for row in rows):
         raise HTTPException(400, "Export rows do not match the selected columns.")
 
+    source_extra_columns = payload.get("source_extra_columns", [])
+    target_extra_columns = payload.get("target_extra_columns", [])
+    row_indices = payload.get("row_indices", [])
+    source_mapping_column_count = payload.get("source_mapping_column_count", 0)
+    target_mapping_column_count = payload.get("target_mapping_column_count", 0)
+    if not isinstance(source_extra_columns, list) or not all(
+        isinstance(column, str) for column in source_extra_columns
+    ):
+        raise HTTPException(400, "Additional File A columns are not valid.")
+    if not isinstance(target_extra_columns, list) or not all(
+        isinstance(column, str) for column in target_extra_columns
+    ):
+        raise HTTPException(400, "Additional File B columns are not valid.")
+
+    if source_extra_columns or target_extra_columns:
+        if source is None or target is None:
+            raise HTTPException(
+                400,
+                "Both input files are required to include additional export columns.",
+            )
+        if not isinstance(row_indices, list) or len(row_indices) != len(rows):
+            raise HTTPException(400, "Export row indexes are not valid.")
+        if not isinstance(source_mapping_column_count, int) or not isinstance(
+            target_mapping_column_count, int
+        ):
+            raise HTTPException(400, "Export column configuration is not valid.")
+
+        source_frame = await read_table(source)
+        target_frame = await read_table(target)
+        if source_extra_columns:
+            validate_columns(source_frame, source_extra_columns, "File A")
+        if target_extra_columns:
+            validate_columns(target_frame, target_extra_columns, "File B")
+
+        target_start = source_mapping_column_count + len(source_extra_columns)
+        for row, indexes in zip(rows, row_indices):
+            if not isinstance(indexes, dict) or not isinstance(
+                indexes.get("source_index"), int
+            ):
+                raise HTTPException(400, "Export row indexes are not valid.")
+            source_index = indexes["source_index"]
+            if source_index < 0 or source_index >= len(source_frame):
+                raise HTTPException(400, "A File A row index is out of range.")
+            source_row = source_frame.iloc[source_index]
+            for offset, column in enumerate(source_extra_columns):
+                value = source_row[column]
+                row[source_mapping_column_count + offset] = "" if pd.isna(value) else str(value)
+
+            target_index = indexes.get("target_index")
+            if target_index is None:
+                continue
+            if not isinstance(target_index, int) or target_index < 0 or target_index >= len(target_frame):
+                raise HTTPException(400, "A File B row index is out of range.")
+            target_row = target_frame.iloc[target_index]
+            for offset, column in enumerate(target_extra_columns):
+                value = target_row[column]
+                row[target_start + target_mapping_column_count + offset] = "" if pd.isna(value) else str(value)
+
     if include_unmapped_target:
         if target is None:
             raise HTTPException(400, "File B is required to include its unused rows.")
@@ -464,7 +526,8 @@ async def create_export(
             raise HTTPException(400, "Mapped File B row indexes are invalid.") from exc
         if not isinstance(parsed_indices, list):
             raise HTTPException(400, "Mapped File B row indexes must be a list.")
-        target_frame = await read_table(target)
+        if target_frame is None:
+            target_frame = await read_table(target)
         validate_columns(target_frame, parsed_target_columns, "File B")
         if source_column_count < 1:
             raise HTTPException(400, "The File A column count is invalid.")
@@ -513,3 +576,4 @@ async def convert_pubmed_export(workbook: UploadFile = File(...), export_format:
         raise HTTPException(400, str(exc)) from exc
     media_type = "text/csv; charset=utf-8" if export_format == "csv" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     return StreamingResponse(output, media_type=media_type, headers={"Content-Disposition": f'attachment; filename="pubmed.{export_format}"'})
+
